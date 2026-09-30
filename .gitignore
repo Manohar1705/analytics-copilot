@@ -1,0 +1,24 @@
+# Secrets - never commit these
+.env
+.streamlit/secrets.toml
+
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Data files (may contain client or personal data)
+*.xlsx
+*.xls
+*.csv
+data/
+uploads/
+outputs/
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
