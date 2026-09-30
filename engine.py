@@ -95,8 +95,8 @@ class Settings:
 
             if env_path and os.path.exists(env_path):
                 load_dotenv(env_path, override=True)
-            elif env_path:
-                warnings.append("No .env file found. Copy .env.example to .env and add your key.")
+            # elif env_path:
+            #     warnings.append("No .env file found. Copy .env.example to .env and add your key.")
         except ImportError:
             warnings.append("python-dotenv is not installed; only real environment variables are used.")
 
