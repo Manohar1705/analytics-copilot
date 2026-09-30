@@ -216,7 +216,6 @@ class LLMRouter:
                     params.pop("temperature")  # some models only allow their default
                 elif "max_tokens" in message and "max_tokens" in params:
                     params["max_completion_tokens"] = params.pop("max_tokens")
-                else:
                     break
         assert last is not None
         raise last
@@ -535,11 +534,20 @@ def _collect_result(value: Any) -> tuple[list[tuple[str, pd.DataFrame, int]], st
     if isinstance(value, (pd.DataFrame, pd.Series)):
         df, total = _prepare_table(value)
         return [("Result", df, total)], None
-    if isinstance(value, dict) and value and all(isinstance(v, (pd.DataFrame, pd.Series)) for v in value.values()):
-        for name, item in value.items():
-            df, total = _prepare_table(item)
-            tables.append((str(name), df, total))
-        return tables, None
+    if isinstance(value, dict) and value:
+        frames = {k: v for k, v in value.items() if isinstance(v, (pd.DataFrame, pd.Series))}
+        singles = {k: v for k, v in value.items() if k not in frames and pd.api.types.is_scalar(v)}
+        if (frames or singles) and len(frames) + len(singles) == len(value):
+            if singles:  # single numbers/text become one small "Summary" table
+                summary = pd.DataFrame({
+                    "Measure": [str(k) for k in singles],
+                    "Value": [v.item() if hasattr(v, "item") else v for v in singles.values()],
+                })
+                tables.append(("Summary", summary, len(summary)))
+            for name, item in frames.items():
+                df, total = _prepare_table(item)
+                tables.append((str(name), df, total))
+            return tables, None
     if isinstance(value, (list, tuple)) and value and all(isinstance(v, (pd.DataFrame, pd.Series)) for v in value):
         for number, item in enumerate(value, start=1):
             df, total = _prepare_table(item)

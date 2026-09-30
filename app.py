@@ -15,7 +15,6 @@ import re
 import pandas as pd
 import plotly.io as pio
 import streamlit as st
-import streamlit.components.v1 as components
 
 import engine
 from data_loader import (
@@ -217,8 +216,8 @@ def render_answer(msg: dict, idx: int) -> None:
         with st.expander("How this was calculated"):
             # if res.model:
             #     st.caption(f"Answered by {res.model} · times the code was run: {res.runs}")
-            # for step in res.steps:
-            #     st.markdown(f"- {step}")
+            for step in res.steps:
+                st.markdown(f"- {step}")
             # if res.code:
             #     st.caption("Code used")
             #     st.code(res.code, language="python")
@@ -327,16 +326,16 @@ def ask(prompt: str) -> None:
     with st.chat_message("user"):
         st.markdown(prompt)
 
-        components.html(
-        """<script>
+    st.iframe(
+        """<!DOCTYPE html><html><body><script>
         const doc = window.parent.document;
         setTimeout(() => {
             const messages = doc.querySelectorAll('[data-testid="stChatMessage"]');
             const last = messages[messages.length - 1];
             if (last) last.scrollIntoView({behavior: 'smooth', block: 'start'});
         }, 150);
-        </script>""",
-        height=0,
+        </script></body></html>""",
+        height=1,
     )
         
     with st.chat_message("assistant"):
