@@ -13,7 +13,9 @@ import io
 import re
 
 import pandas as pd
+import plotly.io as pio
 import streamlit as st
+import streamlit.components.v1 as components
 
 import engine
 from data_loader import (
@@ -176,16 +178,16 @@ def render_downloads(files: dict, idx: int) -> None:
     if files.get("xlsx"):
         buttons.append(("Excel (all tables)", files["xlsx"], f"answer_{idx + 1}.xlsx",
                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", f"dl_{idx}_xlsx"))
-    many = len(files.get("csv", [])) > 1
-    for n, (title, data) in enumerate(files.get("csv", [])):
-        label = f"CSV: {title}" if many else "CSV"
-        buttons.append((label, data, f"answer_{idx + 1}_{n + 1}.csv", "text/csv", f"dl_{idx}_csv_{n}"))
+    # many = len(files.get("csv", [])) > 1
+    # for n, (title, data) in enumerate(files.get("csv", [])):
+    #     label = f"CSV: {title}" if many else "CSV"
+    #     buttons.append((label, data, f"answer_{idx + 1}_{n + 1}.csv", "text/csv", f"dl_{idx}_csv_{n}"))
     many = len(files.get("png", [])) > 1
     for n, data in enumerate(files.get("png", [])):
         label = f"Chart {n + 1} (PNG)" if many else "Chart (PNG)"
         buttons.append((label, data, f"chart_{idx + 1}_{n + 1}.png", "image/png", f"dl_{idx}_png_{n}"))
-    if files.get("code"):
-        buttons.append(("Code (.py)", files["code"], f"analysis_{idx + 1}.py", "text/x-python", f"dl_{idx}_code"))
+    # if files.get("code"):
+    #     buttons.append(("Code (.py)", files["code"], f"analysis_{idx + 1}.py", "text/x-python", f"dl_{idx}_code"))
     for start in range(0, len(buttons), 4):
         row = buttons[start:start + 4]
         for column, (label, data, name, mime, key) in zip(st.columns(4), row):
@@ -205,17 +207,21 @@ def render_answer(msg: dict, idx: int) -> None:
         st.dataframe(display_frame(table.df), hide_index=True)
         if table.truncated:
             st.caption(f"Showing the first {len(table.df):,} of {table.total_rows:,} rows.")
+    for number, figure_json in enumerate(res.plotly_figures):
+        st.plotly_chart(pio.from_json(figure_json), key=f"plotly_{idx}_{number}")
     for figure in res.figures:
         st.image(figure, width=760)
 
+
     if res.steps or res.code or res.error:
         with st.expander("How this was calculated"):
-            if res.model:
-                st.caption(f"Model used: {res.model} · times the code was run: {res.runs}")
-            for step in res.steps:
-                st.markdown(f"- {step}")
-            if res.code:
-                st.code(res.code, language="python")
+            # if res.model:
+            #     st.caption(f"Answered by {res.model} · times the code was run: {res.runs}")
+            # for step in res.steps:
+            #     st.markdown(f"- {step}")
+            # if res.code:
+            #     st.caption("Code used")
+            #     st.code(res.code, language="python")
             if res.error and not res.ok:
                 st.error(res.error)
             if res.result_text:
@@ -296,7 +302,8 @@ def render_sidebar() -> None:
 
         st.subheader("Session")
         st.button("Clear chat", on_click=clear_chat, disabled=not st.session_state.messages)
-        st.button("End session", on_click=end_session, type="primary",
+
+        st.button("End session & clear data", on_click=end_session, type="primary",
                   help="Removes your uploaded data and the chat from this app.")
 
         rows = settings.sample_rows
@@ -320,6 +327,18 @@ def ask(prompt: str) -> None:
     with st.chat_message("user"):
         st.markdown(prompt)
 
+        components.html(
+        """<script>
+        const doc = window.parent.document;
+        setTimeout(() => {
+            const messages = doc.querySelectorAll('[data-testid="stChatMessage"]');
+            const last = messages[messages.length - 1];
+            if (last) last.scrollIntoView({behavior: 'smooth', block: 'start'});
+        }, 150);
+        </script>""",
+        height=0,
+    )
+        
     with st.chat_message("assistant"):
         with st.status("Analysing your data...", expanded=True) as status:
             try:
