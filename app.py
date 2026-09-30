@@ -211,7 +211,7 @@ def render_answer(msg: dict, idx: int) -> None:
     if res.steps or res.code or res.error:
         with st.expander("How this was calculated"):
             if res.model:
-                st.caption(f"Answered by {res.model} · times the code was run: {res.runs}")
+                st.caption(f"Model used: {res.model} · times the code was run: {res.runs}")
             for step in res.steps:
                 st.markdown(f"- {step}")
             if res.code:
@@ -284,27 +284,30 @@ def render_sidebar() -> None:
         for error in st.session_state.load_errors:
             st.warning(error)
 
-        st.subheader("Models")
-        icons = {"ready": "🟢"}
-        for row in router.status():
-            icon = icons.get(row["state"], "🟠" if row["state"].startswith("paused") else "⚪")
-            marker = " ← last used" if row["in_use"] else ""
-            st.markdown(f"{icon} `{row['model']}` {row['state']}{marker}")
+        states = [row["state"] for row in router.status()]
+        if "ready" in states:
+            st.markdown("🟢 AI engine ready")
+        elif any(state.startswith("paused") for state in states):
+            st.markdown("🟠 AI engine is busy. It will retry shortly.")
+        else:
+            st.markdown("🔴 AI engine unavailable. Check your setup.")
         for warning in settings.warnings:
             st.caption(f"⚠️ {warning}")
 
         st.subheader("Session")
         st.button("Clear chat", on_click=clear_chat, disabled=not st.session_state.messages)
-        st.button("Reload settings (.env)", on_click=reload_settings)
         st.button("End session", on_click=end_session, type="primary",
                   help="Removes your uploaded data and the chat from this app.")
 
         rows = settings.sample_rows
-        st.caption(
-            "Your files stay on this computer. The model receives column names, summary statistics"
-            + (f", {rows} sample rows per table" if rows else "")
-            + " and the top rows of each result. E-mails and phone numbers are masked."
-        )
+        with st.expander("Privacy"):
+            st.markdown(
+                "- Your files are used in this session only and are cleared when you end it.\n"
+                "- The AI service receives column names, summary statistics"
+                + (f", {rows} sample rows per table" if rows else "")
+                + " and the top rows of each result, never the full files.\n"
+                "- E-mail addresses and phone numbers are masked."
+            )
 
 
 # =============================================================================
@@ -363,8 +366,7 @@ def main() -> None:
     if problems:
         st.error(" ".join(problems))
         st.markdown(
-            "**To fix:** copy `.env.example` to `.env`, add your API key, save, then click "
-            "**Reload settings (.env)** in the sidebar."
+            "**To fix:** copy `.env.example` to `.env`, add your API key, save, then restart the app."
         )
 
     if not st.session_state.datasets:
