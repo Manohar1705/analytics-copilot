@@ -65,7 +65,7 @@ def show_calls() -> None:
     table = pd.DataFrame(
         {
             "Name": df["name"].map(
-                lambda n: "ask-analytics-copilot" if n in ("plan-code", "fix-code", "explain-result") else n
+                lambda n: "ask-analytics-copilot" if n in ("plan-code", "fix-code", "explain-result") else ("generate-report" if n in ("plan-report", "write-report") else n)
             ),
             "Date & Time": when.dt.strftime("%d/%m/%Y, %I:%M:%S %p"),
             "Model": df["model"],
