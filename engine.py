@@ -40,7 +40,7 @@ from typing import Any, Callable
 import pandas as pd
 
 from data_loader import Dataset, _mask_text, datasets_to_namespace, profile_to_prompt_text
-
+import observability
 # =============================================================================
 # 1. SETTINGS
 # =============================================================================
@@ -182,6 +182,8 @@ class LLMRouter:
         self._cooldown_until: dict[ModelSpec, float] = {}
         self._cooldown_reason: dict[ModelSpec, str] = {}
         self.last_used: ModelSpec | None = None
+        self.session_id: str | None = None  # set by app.py, groups AI calls per browser session
+        self.trace_id: str | None = None  # set for each question, groups that question's AI calls
 
     # -- clients --------------------------------------------------------------
     def _default_client(self, spec: ModelSpec) -> Any:
@@ -247,6 +249,7 @@ class LLMRouter:
         temperature: float | None = None,
         max_tokens: int | None = None,
         allow_partial: bool = False,
+        step: str = "llm-call",
     ) -> LLMReply:
         try:
             import openai
@@ -265,8 +268,10 @@ class LLMRouter:
 
         failures: list[str] = []
         for spec in ready + cooling:  # cooling models are only a last resort
+            call = observability.start_call(step, spec.model, spec.provider, self.session_id, self.trace_id)
             try:
                 response = self._complete(spec, messages, temperature, max_tokens, openai)
+                call.finish(usage=getattr(response, "usage", None))
                 choice = response.choices[0]
                 text = _THINK_BLOCK.sub("", choice.message.content or "").strip()
                 finish = getattr(choice, "finish_reason", None)
@@ -280,6 +285,7 @@ class LLMRouter:
                 return LLMReply(text=text, model=spec, finish_reason=finish)
             except (openai.APIError, _BadReply) as exc:
                 reason, seconds = self._classify(exc, openai)
+                call.finish(error=reason)  # ignored if the call was already recorded
                 if seconds:
                     self._cooldown_until[spec] = time.time() + seconds
                     self._cooldown_reason[spec] = reason
@@ -782,10 +788,11 @@ def answer_question(
     messages = [{"role": "system", "content": build_system_prompt(prepared.profile_text)}]
     messages += trim_history(history)
     messages.append({"role": "user", "content": question})
+    router.trace_id = observability.new_trace_id()  # groups this question's AI calls
 
     log("Understanding your question")
     try:
-        reply = router.chat(messages)
+        reply = router.chat(messages, step="plan-code")
     except LLMUnavailable as exc:
         return AnswerResult(ok=False, text=f"No model could answer right now. {exc}", error=str(exc), steps=steps)
     model_label = reply.model.label
@@ -813,7 +820,7 @@ def answer_question(
             {"role": "user", "content": build_fix_prompt(run.error or "unknown error")},
         ]
         try:
-            reply = router.chat(fix_messages)
+            reply = router.chat(fix_messages, step="fix-code")
         except LLMUnavailable as exc:
             return AnswerResult(
                 ok=False, text=f"The code failed and no model could fix it. {exc}", code=code,
@@ -835,7 +842,8 @@ def answer_question(
     log("Writing the summary")
     try:
         explained = router.chat(
-            build_explain_messages(question, code, summarize_output(run)), temperature=0.3, allow_partial=True
+            build_explain_messages(question, code, summarize_output(run)),
+            temperature=0.3, allow_partial=True, step="explain-result",
         )
         final_text = explained.text
         model_label = explained.model.label

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import io
 import re
-
+import uuid
 import pandas as pd
 import plotly.io as pio
 import streamlit as st
@@ -43,6 +43,7 @@ def init_state() -> None:
         settings = engine.Settings.from_env()
         st.session_state.settings = settings
         st.session_state.router = engine.LLMRouter(settings)
+        st.session_state.router.session_id = uuid.uuid4().hex[:12]
     defaults = {
         "uploader_key": 0,
         "signature": (),
