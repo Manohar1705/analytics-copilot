@@ -69,14 +69,14 @@ def show_calls() -> None:
             ),
             "Date & Time": when.dt.strftime("%d/%m/%Y, %I:%M:%S %p"),
             "Model": df["model"],
-            "Cost": df["cost"].map(lambda v: f"${v:.6f}" if pd.notna(v) else "n/a"),
+            "Cost": df["cost"].map(lambda v: f"${v:.6f}" if pd.notna(v) else "-"),
             "Latency": df["latency"].map(lambda v: f"{v:.3f}s" if pd.notna(v) else "-"),
             "Total Tokens": df["total_tokens"].map(lambda v: f"{int(v)}" if pd.notna(v) else "-"),
             "Status": df["status"],    
         }
     )
     st.dataframe(table, hide_index=True)
-    st.caption("Cost shows n/a when Langfuse has no price for the model.")
+    
 
 
 show_calls()
