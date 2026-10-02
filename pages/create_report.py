@@ -131,8 +131,8 @@ if too_many:
 
 st.subheader("2. Name the report")
 left, right = st.columns(2)
-title = left.text_input("Report title", value="Monthly Report", max_chars=80, key="report_title")
-period = right.text_input("Period", placeholder="e.g. July 2026", max_chars=40, key="report_period")
+title = left.text_input("Report title", max_chars=80, key="report_title")
+period = right.text_input("Period", max_chars=40, key="report_period")
 
 st.subheader("3. Generate")
 if st.button("Generate report", type="primary", disabled=not picked or too_many):

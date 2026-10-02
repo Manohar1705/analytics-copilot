@@ -105,15 +105,14 @@ def use_starter(question: str) -> None:
 
 def process_upload(files: list) -> None:
     """Read the uploaded files, but only when the set of files has changed."""
+    if not files:
+        return  # an empty box (for example after visiting another page) must not wipe the session
     signature = tuple((f.name, f.size) for f in files)
     if signature == st.session_state.signature:
         return
     st.session_state.signature = signature
     st.session_state.cache = {}
     reset_conversation()  # a new set of files means a new conversation
-    if not files:
-        st.session_state.datasets, st.session_state.prepared, st.session_state.load_errors = [], None, []
-        return
     with st.spinner("Reading your files..."):
         result = load_uploaded_files(files)
         settings = st.session_state.settings
@@ -213,21 +212,9 @@ def render_answer(msg: dict, idx: int) -> None:
         st.image(figure, width=760)
 
 
-    if res.steps or res.code or res.error:
-        with st.expander("How this was calculated"):
-            # if res.model:
-            #     st.caption(f"Answered by {res.model} · times the code was run: {res.runs}")
-            for step in res.steps:
-                st.markdown(f"- {step}")
-            # if res.code:
-            #     st.caption("Code used")
-            #     st.code(res.code, language="python")
-            if res.error and not res.ok:
-                st.error(res.error)
-            if res.result_text:
-                st.text(res.result_text)
-            if res.stdout.strip():
-                st.text(res.stdout.strip())
+    if not res.ok and res.error:
+        with st.expander("Details"):
+            st.error(res.error)
 
     render_downloads(msg.get("downloads", {}), idx)
 
@@ -286,7 +273,20 @@ def render_sidebar() -> None:
             accept_multiple_files=True,
             key=f"uploader_{st.session_state.uploader_key}",
         )
-        process_upload(files or [])
+        picked = tuple((f.name, f.size) for f in (files or []))
+        if st.button(
+            "Reload with these files" if st.session_state.datasets else "Start session",
+            type="primary",
+            disabled=not picked or picked == st.session_state.signature,
+        ):
+            process_upload(files)
+            st.rerun()
+        if st.session_state.datasets:
+            st.caption(f"✅ Session active: {len(st.session_state.datasets)} table(s) loaded")
+            for name in dict.fromkeys(d.file_name for d in st.session_state.datasets):
+                st.caption(f"📄 {name}")
+        elif picked:
+            st.caption("Files selected. Click Start session to load them.")
         for error in st.session_state.load_errors:
             st.warning(error)
 
@@ -306,15 +306,10 @@ def render_sidebar() -> None:
         st.button("End session & clear data", on_click=end_session, type="primary",
                   help="Removes your uploaded data and the chat from this app.")
 
-        rows = settings.sample_rows
-        with st.expander("Privacy"):
-            st.markdown(
-                "- Your files are used in this session only and are cleared when you end it.\n"
-                "- The AI service receives column names, summary statistics"
-                + (f", {rows} sample rows per table" if rows else "")
-                + " and the top rows of each result, never the full files.\n"
-                "- E-mail addresses and phone numbers are masked."
-            )
+
+
+
+
 
 
 # =============================================================================
@@ -366,7 +361,7 @@ def ask(prompt: str) -> None:
         st.session_state.messages.append(message)
         if res.ok:
             st.session_state.history.extend(res.history)
-        render_answer(message, len(st.session_state.messages) - 1)
+    st.rerun()  # redraw the page once, so every answer is drawn by the loop in main()
 
 
 def main() -> None:
@@ -391,7 +386,7 @@ def main() -> None:
     if not st.session_state.datasets:
         st.markdown(
             "**How it works**\n\n"
-            "1. Upload one or more CSV or Excel files in the sidebar. Every Excel sheet is read.\n"
+            "1. Upload one or more CSV or Excel files in the sidebar, then click Start session. Every Excel sheet is read.\n"
             "2. Check the preview and the automatic cleaning notes.\n"
             "3. Ask a question. You get an answer, the tables and charts behind it, and downloads."
         )
@@ -411,7 +406,7 @@ def main() -> None:
         for number, question in enumerate(STARTER_QUESTIONS):
             st.button(question, key=f"starter_{number}", on_click=use_starter, args=(question,))
 
-    typed = st.chat_input("Ask a question about your data" if ready else "Upload a file first", disabled=not ready)
+    typed = st.chat_input("Ask a question about your data" if ready else "Upload files and click Start session first", disabled=not ready)
     prompt = typed or st.session_state.pop("pending_prompt", None)
     st.session_state.pending_prompt = None
     if prompt and ready:
