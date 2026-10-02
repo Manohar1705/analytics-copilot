@@ -238,9 +238,9 @@ def _frame(slide, deck_title: str, title: str, number: int, source: str | None) 
     title = _clean(title)[:110] or "Untitled"
     size = 22 if len(title) <= 62 else 18 if len(title) <= 85 else 16
     _text(slide, 0.5, 0.5, 12.3, 0.6, title, size=size, color=GREY)
-    on_template = slide.slide_layout.name == "Content"  # the template draws logos, footer and page number
-    if _clean(source):
-        x, w = (3.9, 7.2) if on_template else (0.5, 10.8)
+    on_template = slide.slide_layout.name == "Content"  # the template draws the page number
+    if _clean(source):                                                                                   
+        x, w = 0.5, 10.8                                                                                  
         _text(slide, x, 7.05, w, 0.25, f"Source: {_clean(source)[:90]}", size=9, color=LIGHT_GREY)
     if not on_template:
         _text(slide, 12.0, 7.05, 0.83, 0.25, str(number), size=9, color=LIGHT_GREY, align=PP_ALIGN.RIGHT)
@@ -578,6 +578,20 @@ def _cover(prs, title: str, subtitle: str, sources: list[str]) -> None:
         _text(slide, 1.2, 6.6, 10.9, 0.4, "Data source: " + ", ".join(sources)[:160], size=11, color="DCEBFF")
 
 
+def _closing(prs) -> None:
+    """Last slide: 'Thank you' on the template's Closing layout (plain blue slide if no template)."""
+    layout = _layout(prs, "Closing")
+    if layout is not None:
+        slide = prs.slides.add_slide(layout)
+        if slide.shapes.title is not None:
+            slide.shapes.title.text = "Thank you"
+        return
+    slide = _new_slide(prs)
+    slide.background.fill.solid()
+    slide.background.fill.fore_color.rgb = _rgb(COVER_BLUE)
+    _text(slide, 1.2, 2.9, 10.9, 1.6, "Thank you", size=40, bold=True, color="FFFFFF", anchor=MSO_ANCHOR.MIDDLE)
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -618,6 +632,8 @@ def build_deck(deck: dict[str, Any]) -> tuple[bytes, list[str]]:
                 _drop_last_slide(prs)
             number -= 1
             warnings.append(f"Skipped '{label}': {exc}")
+
+    _closing(prs)
 
     buffer = io.BytesIO()
     prs.save(buffer)
