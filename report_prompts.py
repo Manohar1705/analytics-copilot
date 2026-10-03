@@ -139,8 +139,9 @@ def build_plan_messages(
 # Call 2: WRITE
 # ---------------------------------------------------------------------------
 WRITE_SYSTEM_PROMPT = """You write the commentary for a business report deck.
-You are given the slides of the report, each with the numbers already computed.
-Write insights and recommendations using ONLY those numbers.
+You are given the slides of the report. Each slide has its table, some notes and a list of
+"facts" that were already calculated for you. Write insights and recommendations using ONLY
+the numbers and facts you were given. You do not calculate anything.
 
 OUTPUT
 Return ONLY one JSON object, no markdown fences, no commentary:
@@ -150,40 +151,62 @@ Return ONLY one JSON object, no markdown fences, no commentary:
 Include every slide id you were given, once each.
 
 INSIGHTS (per slide)
-- 3 to 4 insights per chart or table slide; 2 to 3 for a headline-numbers slide.
-- One sentence each, 12 to 28 words, plain business English.
-- Each insight states a finding and why it matters to the business, for example the
-  leader and its share, a gap between top and bottom, a concentration, a change from the
-  first to the last period, or a value that stands out from the rest.
-- Cover different angles; do not restate the same number twice on a slide.
+- Chart slides (bar, line, donut): write 5 insights; 4 if the data truly supports no more.
+  Headline-numbers slide: 3 or 4. Table slide: 3 or 4.
+- One sentence each, 15 to 32 words, plain business English.
+- Each insight has two parts: a FINDING taken from the data, and what that finding means for
+  how the business is spread out or exposed (for example concentrated, uneven, balanced,
+  dependent on a few values, a long tail, a sharp swing). Describe the pattern; never give a cause.
+- Build the insights from the "facts" list first (ties, gaps, averages, medians, how many values
+  are above average, the share held by the top 3, first-half against second-half, periods at 0).
+  Use the table only to name the leader and the lowest value. The reader can already see every
+  bar, so never write an insight that only repeats one row of the table.
+- Every insight takes a different angle and uses a different fact. Do not repeat a number.
+- If a note says that values were merged or cut off, say so once, in the insight where it matters.
 
 RECOMMENDATION (per slide)
-- One or two sentences, starting with an action verb (Review, Prioritise, Investigate,
-  Focus, Track, Set).
-- It must follow from that slide's own numbers and name what to look at, not only "monitor".
-- It is a suggestion for the team to consider, so write it as an action, not as a fact.
+- Two sentences, three at most. The first word of the first sentence is an action verb such as
+  Compare, Check, Review, Confirm, Prioritise, Investigate, Track.
+- Write it as a CHECK for the team, not as a claim. Name the specific items and their numbers,
+  then say what to find out, for example "Compare <item A> (<number>) with <item B> (<number>)
+  and confirm whether the gap is intended."
+- Only recommend what can be done with this data: compare, review, confirm, correct the data,
+  prioritise by size, track over time. Never recommend actions that need information you were
+  not given, such as hiring, pricing, budgets, campaigns, targets or customer retention.
+- If a note says that spellings were merged, make one recommendation about standardising that
+  column in the source file.
 
 SUMMARY (closing slide)
-- 3 to 6 items. "heading" is 2 to 5 words. "text" is one or two sentences.
-- Each item pulls together the recommendations of one or more slides; keep them concrete.
+- 4 to 6 items, one per theme (for example workload balance, concentration by category,
+  trend over time, data quality). Each item must be different from the others.
+- "heading" is 2 to 5 words. "text" is two sentences: first the pattern across the slides with
+  its key number, then the specific check to carry out.
+- Cover the recommendation of every slide in at least one item. If there are fewer than 4
+  themes, split a theme by slide rather than invent one.
 
 NUMBERS - STRICT
-- Use only numbers that appear in the computed data of the same slide. You may state a
-  share or a difference ONLY if the data already includes it (fields "share_pct" and
-  "change" are provided where they apply); otherwise do not calculate new figures.
-- Copy numbers exactly as written in the data, with the same rounding. Do not round
-  further, convert units or restate a count as a percentage.
-- When you name a number, name what it measures and the category it belongs to.
-- If a slide has little data, write fewer or more cautious insights. Never pad.
+- Use only numbers that appear in the slide's table, notes or facts. Copy them exactly as
+  written, with the same rounding. Do not round further, convert units or add up new totals.
+- A percentage is allowed only if it is written in the data ("share of total (%)" column or a fact).
+  Never turn a count into a percentage yourself.
+- Every number must say what it counts and which item it belongs to. Check that the number
+  really belongs to that item before you write it ("South has 9", not "South has 1").
+- Use the singular for 1 ("1 Client") and the plural otherwise ("8 Clients").
+- If a slide has little data, write fewer insights. Never pad.
 
 NO INVENTED CONTEXT
-- Do not explain causes ("because of", "due to", "driven by") unless a column in the data
-  says so. Do not mention events, seasons, campaigns, competitors, targets, benchmarks or
-  industry norms. Describe what the data shows, not why.
-- Do not claim a trend from fewer than 3 periods. Do not call something good or bad
-  unless the numbers make that unambiguous; use words like higher, lower, concentrated.
+- Do not explain causes ("because of", "due to", "driven by"). Do not mention events, seasons,
+  campaigns, competitors, targets, benchmarks or industry norms. Describe what the data shows,
+  not why.
+- Never use a business word that is not in the column names or values of the data. For
+  example do not write retention, churn, revenue, profit, satisfaction or conversion unless a
+  column or value says so.
+- Never write a field name or a heading with an underscore. Write "share of total", not
+  "share_pct".
+- Do not claim a trend from fewer than 3 periods. Do not call something good or bad unless the
+  numbers make that unambiguous; use words like higher, lower, concentrated, uneven.
 - Words such as "significant" or "dramatic" need a clearly large gap in the numbers.
-- If values are missing or truncated (the data says so), do not draw conclusions from them.
+- If values are missing or truncated (a note says so), do not draw conclusions from them.
 
 STYLE
 - No emojis, no markdown, no bullet characters, no slide numbers.
@@ -222,9 +245,10 @@ def build_write_messages(
 
 
 def number_problem_note(problems: list[str]) -> str:
-    """Repair note when the number check finds figures that are not in the computed data."""
+    """Repair note when the checks find figures, words or gaps that the data does not support."""
     lines = "\n".join(f"- {p}" for p in problems[:12])
     return (
-        "These figures in your text do not appear in the computed data. Remove them or "
-        f"replace them with numbers from the data:\n{lines}"
+        "Your text has these problems. Remove or rewrite the affected sentences using only "
+        "the numbers, facts and words in the data, and fix any missing items, then return the "
+        f"full corrected JSON:\n{lines}"
     )

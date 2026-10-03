@@ -39,6 +39,19 @@ MAX_PERIODS = 24
 CAUSAL_WORDS = re.compile(
     r"\b(because|due to|driven by|caused by|as a result of|thanks to|owing to)\b", re.IGNORECASE
 )
+SHARE_COL = "share of total (%)"  # the name the AI sees for the share column
+MIN_INSIGHTS = 4  # chart slides: fewer than this triggers one repair request
+MIN_SUMMARY = 4  # closing slide: fewer than this is topped up from the slide recommendations
+MAX_SUMMARY = 6
+# Field names the AI must never copy into the text.
+FIELD_NAMES = re.compile(r"\b(share_pct|change_pct|first_period|last_period|highest_period|highest_value)\b", re.IGNORECASE)
+# Business words the AI tends to invent. Allowed only if the word is in that slide's own data.
+INVENTED_TERMS = re.compile(
+    r"\b(retention|retain\w*|churn\w*|attrition|revenue|profit\w*|margins?|conversion\w*|satisf\w+|loyal\w+"
+    r"|up-?sell\w*|cross-?sell\w*|competit\w+|benchmark\w*|targets?|seasonal\w*|campaigns?"
+    r"|best practices?|industry (?:norms?|standards?|averages?))\b",
+    re.IGNORECASE,
+)
 
 
 class PlanError(Exception):
@@ -184,12 +197,17 @@ def _metrics(df: pd.DataFrame, raw: Any, limit: int) -> list[dict[str, Any]]:
 def _whole(df: pd.DataFrame, metric: dict[str, Any]) -> float | None:
     if metric["column"] is None:
         return float(len(df))
-    value = getattr(df[metric["column"]], metric["agg"])()
+    column = df[metric["column"]]
+    if metric["agg"] == "nunique" and (pd.api.types.is_object_dtype(column) or pd.api.types.is_string_dtype(column)):
+        # count distinct text values the same way the charts do: "south" and "South" are one value
+        text = column.dropna().astype(str).str.strip()
+        return float(text[text != ""].str.lower().nunique())
+    value = getattr(column, metric["agg"])()
     return None if pd.isna(value) else float(value)
 
 
 def _group(df: pd.DataFrame, category: str, metrics: list[dict[str, Any]]) -> pd.DataFrame:
-    keys = df[category].map(_label)
+    keys, _ = _keys(df[category])
     keep = keys != ""
     if not keep.any():
         raise PlanError(f"'{category}' has no values")
@@ -227,6 +245,89 @@ def _shares(result: pd.DataFrame, metrics: list[dict[str, Any]]) -> pd.Series | 
     return values / total * 100
 
 
+def _keys(series: pd.Series) -> tuple[pd.Series, dict[str, str]]:
+    """Category labels, with spellings that differ only in capital letters merged
+    ("south" and "South" become one value). Returns (labels, {spelling: chosen spelling})."""
+    keys = series.map(_label)
+    counts = keys[keys != ""].value_counts()
+    groups: dict[str, list[tuple[str, int]]] = {}
+    for spelling, n in counts.items():
+        groups.setdefault(spelling.lower(), []).append((spelling, int(n)))
+    mapping: dict[str, str] = {}
+    for variants in groups.values():
+        if len(variants) < 2:
+            continue
+        # most frequent spelling wins; on a tie prefer mixed case ("East") over "EAST" / "east"
+        best = sorted(variants, key=lambda v: (-v[1], v[0] == v[0].lower() or v[0] == v[0].upper(), v[0]))[0][0]
+        mapping.update({v: best for v, _ in variants if v != best})
+    if mapping:
+        keys = keys.map(lambda k: mapping.get(k, k))
+    return keys, mapping
+
+
+def _merge_note(df: pd.DataFrame, category: str) -> list[str]:
+    mapping = _keys(df[category])[1]
+    if not mapping:
+        return []
+    pairs = ", ".join(f"'{a}' into '{b}'" for a, b in list(mapping.items())[:4])
+    return [f"Spellings of {category} that differ only in capital letters were merged ({pairs}); the source file is inconsistent"]
+
+
+def _spread_facts(values: pd.Series, cat: str, metric: dict[str, Any]) -> list[str]:
+    """Plain-English facts about ALL values of a category chart, worked out here so the AI never calculates."""
+    vals = values.dropna().astype(float).sort_values(ascending=False, kind="mergesort")
+    n = len(vals)
+    if n < 3:
+        return []
+    name, agg = metric["label"], metric["agg"]
+    hi, lo = float(vals.iloc[0]), float(vals.iloc[-1])
+    facts: list[str] = []
+    top_names = [i for i, v in vals.items() if v == hi]
+    low_names = [i for i, v in vals.items() if v == lo]
+    if len(top_names) > 1:
+        facts.append(f"{len(top_names)} values of {cat} tie for the highest {name} ({_fmt(hi)} each): {', '.join(top_names[:4])}.")
+    if len(low_names) > 1:
+        facts.append(f"{len(low_names)} values of {cat} tie for the lowest {name} ({_fmt(lo)} each): {', '.join(low_names[:4])}.")
+    gap = f"The gap between the highest ({_fmt(hi)}) and the lowest ({_fmt(lo)}) {name} is {_fmt(hi - lo)}"
+    facts.append(gap + (f", so the highest is {hi / lo:.1f} times the lowest." if lo > 0 and hi / lo >= 1.5 else "."))
+    if agg in ("count", "sum", "nunique"):
+        mean, median = float(vals.mean()), float(vals.median())
+        above = int((vals > mean).sum())
+        facts.append(f"Across the {n} values of {cat}, the average {name} is {_fmt(mean)} and the median is {_fmt(median)}.")
+        facts.append(f"{above} of {n} values of {cat} are above that average of {_fmt(mean)}.")
+    if agg in ("count", "sum") and (vals >= 0).all() and vals.sum() > 0:
+        total = float(vals.sum())
+        if n >= 5:
+            top3 = float(vals.iloc[:3].sum())
+            facts.append(f"The top 3 values of {cat} together hold {_fmt(top3)} of {_fmt(total)} {name} ({top3 / total * 100:.1f}% of the total).")
+        cumulative = vals.cumsum() / total
+        k = int((cumulative < 0.5).sum()) + 1
+        if n >= 4 and k < n:
+            facts.append(f"The top {k} of {n} values of {cat} account for at least half of the total {name}.")
+    return facts
+
+
+def _trend_facts(result: pd.DataFrame, metrics: list[dict[str, Any]], labels: list[str], freq: str) -> list[str]:
+    """Plain-English facts about a time series, worked out here so the AI never calculates."""
+    facts: list[str] = []
+    for m in metrics:
+        name, series = m["label"], result[m["label"]].astype(float)
+        if series.notna().sum() < 3:
+            continue
+        mean = float(series.mean())
+        facts.append(f"{name}: the average is {_fmt(mean)} per {freq} across {len(series)} periods, and {int((series > mean).sum())} periods were above that average.")
+        if m["agg"] in ("count", "sum", "nunique"):
+            zeros = [labels[i] for i in range(len(series)) if series.iloc[i] == 0]
+            if zeros:
+                more = " and others" if len(zeros) > 4 else ""
+                facts.append(f"{name} was 0 in {len(zeros)} periods: {', '.join(zeros[:4])}{more}.")
+        half = len(series) // 2
+        if half >= 3:
+            early, late = float(series.iloc[:half].mean()), float(series.iloc[-half:].mean())
+            facts.append(f"{name}: the average per {freq} was {_fmt(early)} over the first {half} periods and {_fmt(late)} over the last {half} periods.")
+    return facts
+
+
 # ---------------------------------------------------------------------------
 # One compute function per slide type
 # ---------------------------------------------------------------------------
@@ -251,10 +352,11 @@ def _c_bar(spec: dict[str, Any], ds: Dataset) -> _Slide:
     if total_groups > top_n:
         notes.append(f"{top_n} of {total_groups} values of {cat} shown, ranked by {metrics[0]['label']}")
     if share_shown is not None:
-        notes.append(f"share_pct is the share of the total across all {total_groups} values of {cat}")
+        notes.append(f"'{SHARE_COL}' is the share of the total across all {total_groups} values of {cat}")
+    notes += _merge_note(df, cat)
 
     names = [m["label"] for m in metrics]
-    columns = [cat] + names + (["share_pct"] if share_shown is not None else [])
+    columns = [cat] + names + ([SHARE_COL] if share_shown is not None else [])
     rows = []
     for index, row in shown.iterrows():
         line = [index] + [_fmt(row[n]) for n in names]
@@ -273,7 +375,7 @@ def _c_bar(spec: dict[str, Any], ds: Dataset) -> _Slide:
         "stacked": bool(spec.get("stacked")) and len(names) > 1, "horizontal": horizontal,
         "number_format": _number_format([v for s in series for v in s["values"]]),
     }
-    ai = {"columns": columns, "rows": rows, "notes": notes}
+    ai = {"columns": columns, "rows": rows, "notes": notes, "facts": _spread_facts(result[metrics[0]["label"]], cat, metrics[0])}
     return _Slide(("bar", ds.alias, cat, tuple((m["column"], m["agg"]) for m in metrics)), slide, ai, [ds.file_name])
 
 
@@ -348,7 +450,8 @@ def _c_line(spec: dict[str, Any], ds: Dataset) -> _Slide:
         "categories": labels, "series": series,
         "number_format": _number_format([v for s in series for v in s["values"]]),
     }
-    ai = {"columns": ["Period"] + names, "rows": rows, "notes": notes, "change": change}
+    ai = {"columns": ["Period"] + names, "rows": rows, "notes": notes, "change": change,
+        "facts": _trend_facts(result, metrics, labels, freq)}
     return _Slide(("line", ds.alias, date_col, tuple((m["column"], m["agg"]) for m in metrics)), slide, ai, [ds.file_name])
 
 
@@ -374,6 +477,7 @@ def _c_donut(spec: dict[str, Any], ds: Dataset) -> _Slide:
         labels.append("Other")
         amounts.append(other)
         notes.append(f"'Other' combines the {len(values) - top_n} smaller values of {cat}")
+    notes += _merge_note(df, cat)
     rows = [[lab, _fmt(a), f"{a / total * 100:.1f}"] for lab, a in zip(labels, amounts)]
     slide = {
         **_slide_head(spec, ds, f"Share of {metric['label']} by {cat}"),
@@ -381,7 +485,8 @@ def _c_donut(spec: dict[str, Any], ds: Dataset) -> _Slide:
         "categories": labels, "series": [{"name": metric["label"], "values": [round(a, 2) for a in amounts]}],
         "number_format": _number_format(amounts),
     }
-    ai = {"columns": [cat, metric["label"], "share_pct"], "rows": rows, "notes": notes}
+    ai = {"columns": [cat, metric["label"], SHARE_COL], "rows": rows, "notes": notes,
+        "facts": _spread_facts(values, cat, metric)}
     return _Slide(("donut", ds.alias, cat, (metric["column"], metric["agg"])), slide, ai, [ds.file_name])
 
 
@@ -436,6 +541,8 @@ def _c_kpis(spec: dict[str, Any], datasets: dict[str, Dataset], default: Dataset
     if not isinstance(raw, list) or not raw:
         raise PlanError("no kpis given")
     tiles, rows, files, seen = [], [], [], set()
+    counts: list[tuple[Dataset, str, float]] = []
+    distinct: list[tuple[Dataset, str, float]] = []
     for item in raw[: pptx_writer.MAX_KPIS]:
         if not isinstance(item, dict):
             continue
@@ -451,6 +558,10 @@ def _c_kpis(spec: dict[str, Any], datasets: dict[str, Dataset], default: Dataset
         if label in seen:
             continue
         seen.add(label)
+        if metric["agg"] == "count" and metric["column"] is None:
+            counts.append((ds, label, value))
+        elif metric["agg"] == "nunique" and value > 0:
+            distinct.append((ds, label, value))
         tiles.append({"label": label, "value": _fmt(value), "note": ds.file_name if ds is not default else ""})
         rows.append([label, _fmt(value)])
         files.append(ds.file_name)
@@ -460,7 +571,14 @@ def _c_kpis(spec: dict[str, Any], datasets: dict[str, Dataset], default: Dataset
         "title": _clean(spec.get("title")) or "Headline numbers", "type": "kpis", "kpis": tiles,
         "source": ", ".join(dict.fromkeys(files)),
     }
-    return _Slide(("kpis",), slide, {"columns": ["metric", "value"], "rows": rows, "notes": []}, list(dict.fromkeys(files)))
+    facts = [
+        f"{c_label} ({_fmt(c_value)}) divided by {d_label} ({_fmt(d_value)}) gives {_fmt(c_value / d_value)} on average."
+        for c_ds, c_label, c_value in counts[:1]
+        for d_ds, d_label, d_value in distinct[:4]
+        if d_ds is c_ds
+    ]
+    ai = {"columns": ["metric", "value"], "rows": rows, "notes": [], "facts": facts}
+    return _Slide(("kpis",), slide, ai, list(dict.fromkeys(files)))
 
 
 def _dataset(datasets: dict[str, Dataset], alias: Any) -> Dataset:
@@ -570,8 +688,26 @@ def _sentences(text: str) -> list[str]:
     return [s for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s]
 
 
-def _sentence_ok(text: str, allowed: set[float]) -> bool:
-    return not CAUSAL_WORDS.search(text) and not _bad_numbers(text, allowed)
+def _vocabulary(*views: Any) -> str:
+    """Lower-case text of a slide's data (columns, categories, notes, facts) for the invented-word check."""
+    return json.dumps(views, ensure_ascii=False, default=str).lower()
+
+
+def _text_problems(text: str, allowed: set[float], vocab: str) -> list[str]:
+    """Everything wrong with one sentence. An empty list means the sentence is kept."""
+    problems = [f"the figure '{raw}' is not in the data" for raw in _bad_numbers(text, allowed)]
+    if CAUSAL_WORDS.search(text):
+        problems.append("it gives a cause, which the data does not state")
+    if FIELD_NAMES.search(text):
+        problems.append("it contains a field name (write 'share of total', not 'share_pct')")
+    for match in INVENTED_TERMS.finditer(text):
+        if match.group(0).lower() not in vocab:
+            problems.append(f"the word '{match.group(0)}' is not in the data")
+    return problems
+
+
+def _sentence_ok(text: str, allowed: set[float], vocab: str) -> bool:
+    return not _text_problems(text, allowed, vocab)
 
 
 def _strings(value: Any) -> list[str]:
@@ -594,7 +730,7 @@ def _parse_commentary(parsed: Any, count: int) -> tuple[dict[int, dict[str, Any]
             continue
         if 1 <= number <= count and number not in by_id:
             by_id[number] = {
-                "insights": _strings(item.get("insights"))[:4],
+                "insights": _strings(item.get("insights"))[:5],
                 "recommendation": " ".join(_strings(item.get("recommendation"))),
             }
     summary = []
@@ -605,20 +741,24 @@ def _parse_commentary(parsed: Any, count: int) -> tuple[dict[int, dict[str, Any]
 
 
 def _number_problems(by_id: dict[int, dict[str, Any]], summary: list[dict[str, str]], slides: list[_Slide]) -> list[str]:
+    """Problems worth one repair request: bad figures, causes, field names, invented words, thin text."""
     problems = []
     everything = _allowed([s.ai for s in slides])
+    everything_vocab = _vocabulary([(s.ai, s.slide["title"]) for s in slides])
     for number, entry in by_id.items():
-        allowed = _allowed(slides[number - 1].ai)
-        title = slides[number - 1].slide["title"]
+        slide = slides[number - 1]
+        allowed, vocab, title = _allowed(slide.ai), _vocabulary(slide.ai, slide.slide["title"]), slide.slide["title"]
         for text in entry["insights"] + _sentences(entry["recommendation"]):
-            for raw in _bad_numbers(text, allowed):
-                problems.append(f"Slide {number} ('{title}'): '{raw}' in \"{text[:90]}\"")
-            if CAUSAL_WORDS.search(text):
-                problems.append(f"Slide {number} ('{title}'): gives a cause, which the data does not state: \"{text[:90]}\"")
+            for issue in _text_problems(text, allowed, vocab):
+                problems.append(f"Slide {number} ('{title}'): {issue}: \"{text[:90]}\"")
+        if slide.slide["type"] in ("bar", "line", "donut") and len(entry["insights"]) < MIN_INSIGHTS:
+            problems.append(f"Slide {number} ('{title}'): only {len(entry['insights'])} insight(s); write {MIN_INSIGHTS} or 5, each from a different fact")
     for item in summary:
         for sentence in _sentences(item["text"]):
-            for raw in _bad_numbers(sentence, everything):
-                problems.append(f"Summary '{item['heading']}': '{raw}' in \"{sentence[:90]}\"")
+            for issue in _text_problems(sentence, everything, everything_vocab):
+                problems.append(f"Summary '{item['heading']}': {issue}: \"{sentence[:90]}\"")
+    if len(slides) >= 3 and len(summary) < MIN_SUMMARY:
+        problems.append(f"Summary has only {len(summary)} item(s); write {MIN_SUMMARY} to {MAX_SUMMARY}, one per theme")
     return problems
 
 
@@ -627,20 +767,22 @@ def _strip_unsupported(
 ) -> tuple[dict[int, dict[str, Any]], list[dict[str, str]], list[str]]:
     removed: list[str] = []
     everything = _allowed([s.ai for s in slides])
+    everything_vocab = _vocabulary([(s.ai, s.slide["title"]) for s in slides])
     for number, entry in by_id.items():
-        allowed = _allowed(slides[number - 1].ai)
+        slide = slides[number - 1]
+        allowed, vocab = _allowed(slide.ai), _vocabulary(slide.ai, slide.slide["title"])
         keep = []
         for text in entry["insights"]:
-            (keep if _sentence_ok(text, allowed) else removed).append(text)
+            (keep if _sentence_ok(text, allowed, vocab) else removed).append(text)
         entry["insights"] = keep
         kept, dropped = [], []
         for sentence in _sentences(entry["recommendation"]):
-            (kept if _sentence_ok(sentence, allowed) else dropped).append(sentence)
+            (kept if _sentence_ok(sentence, allowed, vocab) else dropped).append(sentence)
         entry["recommendation"] = " ".join(kept)
         removed += dropped
     cleaned = []
     for item in summary:
-        kept = [s for s in _sentences(item["text"]) if _sentence_ok(s, everything)]
+        kept = [s for s in _sentences(item["text"]) if _sentence_ok(s, everything, everything_vocab)]
         removed += [s for s in _sentences(item["text"]) if s not in kept]
         if kept:
             cleaned.append({"heading": item["heading"], "text": " ".join(kept)})
@@ -749,8 +891,13 @@ def build_report(
     for number, s in enumerate(slides, start=1):
         entry = by_id.get(number, {})
         deck_slides.append({**s.slide, "insights": entry.get("insights", []), "recommendation": entry.get("recommendation", "")})
-    if not summary:  # fall back to the per-slide recommendations
-        summary = [{"heading": _clean(d["title"], 50), "text": d["recommendation"]} for d in deck_slides if d["recommendation"]][:6]
+    if len(summary) < MIN_SUMMARY:  # too few closing items: top up from the per-slide recommendations
+        used = " ".join(item["text"] for item in summary)
+        for d in deck_slides:
+            if len(summary) >= MIN_SUMMARY:
+                break
+            if d["recommendation"] and d["recommendation"] not in used:
+                summary.append({"heading": _clean(d["title"], 50), "text": d["recommendation"]})
     if summary:
         deck_slides.append({"type": "summary", "title": "Key recommendations", "items": summary})
 

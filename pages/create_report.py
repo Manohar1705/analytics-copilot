@@ -135,15 +135,23 @@ title = left.text_input("Report title", max_chars=80, key="report_title")
 period = right.text_input("Period", max_chars=40, key="report_period")
 
 st.subheader("3. Generate")
-if st.button("Generate report", type="primary", disabled=not picked or too_many):
+clicked = st.button("Generate report", type="primary", disabled=not picked or too_many)
+slot = st.empty()  # everything below the button lives here, so the old report is wiped the moment you click
+
+if clicked:
+    st.session_state.pop("report_result", None)  # never keep showing the previous report while a new one builds
     chosen = [d for d in prepared.datasets if d.file_name in picked]
     subset = engine.prepare_data(chosen, settings.sample_rows)
-    with st.status("Building your report", expanded=True) as status:
-        result = report_engine.build_report(subset, router, title.strip(), period.strip(), on_step=st.write)
-        status.update(label="Report ready" if result.ok else "Report failed", state="complete" if result.ok else "error")
-    st.session_state.report_result = result
-
-result = st.session_state.get("report_result")
-if result is not None:
-    st.divider()
-    show_result(result)
+    with slot.container():
+        with st.status("Building your report", expanded=True) as status:
+            result = report_engine.build_report(subset, router, title.strip(), period.strip(), on_step=st.write)
+            status.update(label="Report ready" if result.ok else "Report failed", state="complete" if result.ok else "error")
+        st.session_state.report_result = result
+        st.divider()
+        show_result(result)
+else:
+    result = st.session_state.get("report_result")
+    if result is not None:
+        with slot.container():
+            st.divider()
+            show_result(result)
