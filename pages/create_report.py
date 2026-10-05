@@ -77,7 +77,7 @@ def show_slide(number: int, slide: dict) -> None:
             st.markdown("**Business insights**")
             st.markdown("\n".join(f"- {text}" for text in insights))
         if slide.get("recommendation"):
-            st.markdown(f"**Recommendation** (a suggestion based on this data): {slide['recommendation']}")
+            st.markdown(f"**Recommendation(Experimental Feature)** (a suggestion based on this data): {slide['recommendation']}")
         if slide.get("source"):
             st.caption(f"Source: {slide['source']}")
 

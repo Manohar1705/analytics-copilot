@@ -899,7 +899,7 @@ def build_report(
             if d["recommendation"] and d["recommendation"] not in used:
                 summary.append({"heading": _clean(d["title"], 50), "text": d["recommendation"]})
     if summary:
-        deck_slides.append({"type": "summary", "title": "Key recommendations", "items": summary})
+        deck_slides.append({"type": "summary", "title": "Key recommendations(Experimental Feature)", "items": summary})
 
     files = list(dict.fromkeys(f for s in slides for f in s.files))
     deck = {"title": _clean(title) or "Report", "subtitle": _clean(period), "sources": files, "slides": deck_slides}

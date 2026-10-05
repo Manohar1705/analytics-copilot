@@ -249,13 +249,13 @@ def _frame(slide, deck_title: str, title: str, number: int, source: str | None) 
 def _insight_boxes_right(slide, spec) -> None:
     """Layout A: chart on the left, insight and recommendation boxes stacked on the right."""
     _list_box(slide, 8.45, 1.25, 4.38, 3.55, "Business insights", _as_list(spec.get("insights")), GREEN_TINT, GREEN)
-    _list_box(slide, 8.45, 4.95, 4.38, 1.95, "Recommendation", _as_list(spec.get("recommendation")), BLUE_TINT, BLUE)
+    _list_box(slide, 8.45, 4.95, 4.38, 1.95, "Recommendation(Experimental Feature)", _as_list(spec.get("recommendation")), BLUE_TINT, BLUE)
 
 
 def _insight_boxes_bottom(slide, spec) -> None:
     """Layout B: content on top, insight and recommendation boxes side by side underneath."""
     _list_box(slide, 0.5, 5.2, 7.4, 1.7, "Business insights", _as_list(spec.get("insights")), GREEN_TINT, GREEN)
-    _list_box(slide, 8.1, 5.2, 4.73, 1.7, "Recommendation", _as_list(spec.get("recommendation")), BLUE_TINT, BLUE)
+    _list_box(slide, 8.1, 5.2, 4.73, 1.7, "Recommendation(Experimental Feature)", _as_list(spec.get("recommendation")), BLUE_TINT, BLUE)
 
 
 # ---------------------------------------------------------------------------
@@ -519,7 +519,7 @@ def _summary_slide(prs, deck_title: str, spec: dict[str, Any], number: int) -> N
     if not items:
         raise ValueError("there are no recommendations")
     slide = _new_slide(prs)
-    _frame(slide, deck_title, spec.get("title") or "Key recommendations", number, spec.get("source"))
+    _frame(slide, deck_title, spec.get("title") or "Key recommendations(Experimental Feature)", number, spec.get("source"))
 
     columns = 2 if len(items) > 1 else 1
     rows = math.ceil(len(items) / columns)
