@@ -408,9 +408,12 @@ def profile_column(series: pd.Series, total_rows: int) -> dict[str, Any]:
         )
     elif info["kind"] == "datetime":
         info.update(min=_to_python(non_null.min()), max=_to_python(non_null.max()))
-    elif info["kind"] == "text":
-        top = non_null.astype(str).value_counts().head(3).index.tolist()
-        info["top_values"] = [_mask_text(v)[:40] for v in top]
+    elif info["kind"] in ("text", "boolean"):
+        counts = non_null.astype(str).value_counts()
+        info["top_share"] = round(100 * counts.iloc[0] / len(non_null), 1)
+        info["top_values"] = [
+            f"{_mask_text(v)[:40]} ({100 * n / len(non_null):.1f}%)" for v, n in counts.head(3).items()
+        ]
     return info
 
 
@@ -519,8 +522,10 @@ def _describe_column(info: dict[str, Any]) -> str:
         parts.append(f"min {info['min']}, max {info['max']}, mean {info['mean']}")
     elif info["kind"] == "datetime" and "min" in info:
         parts.append(f"from {info['min']} to {info['max']}")
-    elif info["kind"] == "text" and info.get("top_values"):
+    elif info["kind"] in ("text", "boolean") and info.get("top_values"):
         parts.append("common: " + ", ".join(info["top_values"]))
+        if info.get("top_share", 0) > 98 or info["unique"] <= 2:
+            parts.append("FLAG OR SKEWED - avoid as a chart category if another column works")
     return " | ".join(parts)
 
 

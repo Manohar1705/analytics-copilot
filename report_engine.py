@@ -36,6 +36,7 @@ WRITE_MAX_TOKENS = 6000
 NUMERIC_AGGS = {"sum", "mean", "median", "min", "max"}
 FREQ_CODES = {"week": "W", "month": "M", "quarter": "Q", "year": "Y"}
 MAX_PERIODS = 24
+MAX_TOP_SHARE = 0.98  # a category column above this is swapped for a more balanced one
 CAUSAL_WORDS = re.compile(
     r"\b(because|due to|driven by|caused by|as a result of|thanks to|owing to)\b", re.IGNORECASE
 )
@@ -601,7 +602,54 @@ def _compute(spec: Any, datasets: dict[str, Dataset]) -> _Slide:
         return _c_kpis(spec, datasets, ds)
     return {"bar": _c_bar, "line": _c_line, "donut": _c_donut, "table": _c_table}[kind](spec, ds)
 
+def _top_share(series: pd.Series) -> float:
+    keys, _ = _keys(series)
+    keys = keys[keys != ""]
+    return float(keys.value_counts(normalize=True).iloc[0]) if len(keys) else 1.0
+BINARY_WORDS = {"yes", "no", "true", "false", "y", "n", "t", "f", "0", "1"}
 
+
+def _is_binary_flag(series: pd.Series) -> bool:
+    keys, _ = _keys(series)
+    values = {str(v).strip().lower() for v in keys[keys != ""].unique()}
+    return 0 < len(values) <= 2 and values <= BINARY_WORDS
+
+def _swap_skewed_category(spec: Any, datasets: dict[str, Dataset], used: set[tuple]) -> None:
+    """If a bar/donut counts rows by a column where one value is above 90%, switch to the
+    most balanced other column. If there is none, leave the slide unchanged."""
+    if not isinstance(spec, dict) or str(spec.get("type", "")).lower() not in ("bar", "donut"):
+        return
+    metric = spec.get("metric") if spec.get("type") == "donut" else (spec.get("metrics") or [None])[0]
+    if not isinstance(metric, dict) or str(metric.get("agg", "")).lower() != "count":
+        return
+    try:
+        df = _dataset(datasets, spec.get("dataset")).df
+        current = _col(df, spec.get("category"), "category")
+        if _top_share(df[current]) <= MAX_TOP_SHARE and not _is_binary_flag(df[current]):
+            return
+        best, best_share = None, 1.0
+        for col in df.columns:
+            series = df[col]
+            if col == current or (spec.get("dataset"), col) in used:
+                continue
+            if pd.api.types.is_datetime64_any_dtype(series) or (
+                pd.api.types.is_numeric_dtype(series) and not pd.api.types.is_bool_dtype(series)
+            ):
+                continue
+            if series.isna().mean() > 0.5 or not 2 <= series.nunique(dropna=True) <= 12:
+                continue
+            if _is_binary_flag(series):
+                continue
+            share = _top_share(series)
+            if share <= MAX_TOP_SHARE and share < best_share:
+                best, best_share = col, share
+        if best:
+            title = str(spec.get("title", ""))
+            spec["title"] = title.replace(current, best) if current in title else f"{title} by {best}"
+            spec["category"] = best
+    except Exception:  # noqa: BLE001 - never lose a slide because of this helper
+        return
+    
 def _build_slides(plan: Any, datasets: dict[str, Dataset], limit: int) -> tuple[list[_Slide], list[str]]:
     """Validate and compute every planned slide. Returns (good slides, problems)."""
     problems: list[str] = []
@@ -609,10 +657,20 @@ def _build_slides(plan: Any, datasets: dict[str, Dataset], limit: int) -> tuple[
         return [], ['the plan must be {"slides": [ ... ]} with at least one slide']
     good: list[_Slide] = []
     keys: set[tuple] = set()
+    used: set[tuple] = set()
     for number, spec in enumerate(plan["slides"], start=1):
         name = _clean(spec.get("title"), 50) if isinstance(spec, dict) else ""
+        original = dict(spec) if isinstance(spec, dict) else None
+        _swap_skewed_category(spec, datasets, used)
         try:
-            slide = _compute(spec, datasets)
+            try:
+                slide = _compute(spec, datasets)
+            except Exception:
+                if original is None or spec == original:
+                    raise
+                spec.clear()
+                spec.update(original)  # swap failed: go back to the original slide
+                slide = _compute(spec, datasets)
         except PlanError as exc:
             problems.append(f"slide {number} ('{name}'): {exc}")
             continue
@@ -623,6 +681,8 @@ def _build_slides(plan: Any, datasets: dict[str, Dataset], limit: int) -> tuple[
             problems.append(f"slide {number} ('{name}'): repeats an earlier slide")
             continue
         keys.add(slide.key)
+        if isinstance(spec, dict):
+            used.add((spec.get("dataset"), spec.get("category")))
         good.append(slide)
     good.sort(key=lambda s: s.key[0] != "kpis")  # headline numbers first (sort is stable)
     return good[:limit], problems

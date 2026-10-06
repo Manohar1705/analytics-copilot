@@ -97,6 +97,10 @@ RULES
 - Never repeat the same category and metric on two slides.
 - Prefer columns that carry business meaning (status, region, owner, amount, date) over
   ids, free text or columns that are mostly empty.
+- Prefer columns where no single value holds more than 98%% of the rows (the profile shows
+  percentages). Use a column above 98%% only if no other column fits.
+  - Avoid yes/no or true/false columns as chart categories. Use them only if no other
+  column fits.
 - Skip columns the profile marks as masked or sensitive.
 - Do not plan joins or calculations across files. Each slide uses one table.
 - Do not plan chart types other than those listed.""" % {
