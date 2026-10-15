@@ -6,7 +6,7 @@ Uses the KPI layer: sources.py (read file) -> kpi_engine.py (calculate) -> snaps
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
 import pandas as pd
 import plotly.express as px
@@ -19,7 +19,7 @@ import sources
 
 st.set_page_config(page_title="KPI Dashboard", page_icon="📈", layout="wide")
 
-SOURCE_NAMES = list(sources.SOURCES.keys())  # ServiceNow, Sprinklr, Traackr
+SOURCE_ORDER = ["ServiceNow", "Traackr", "Sprinklr"]  # order of the sections on the page
 CARDS_PER_ROW = 4
 MAX_COMPARE_BARS = 12
 
@@ -39,7 +39,7 @@ def upload_section() -> None:
 
     # Read each file once per upload, not on every click.
     cache = st.session_state.setdefault("file_results", {})
-    ready = []  # (file name, result, start, end)
+    ready = []  # (file_key, result, start, end)
     all_ok = True
     st.subheader("2. Confirm the period for each file")
     for file in files:
@@ -80,7 +80,6 @@ def upload_section() -> None:
                     for message in calc.warnings:
                         st.write("- " + message)
 
-
 # =============================================================================
 # Dashboard for one source
 # =============================================================================
@@ -115,24 +114,29 @@ def _breakdown_chart(row: dict, previous_label: str | None, current_label: str) 
     st.plotly_chart(fig, width="stretch")
 
 
-def source_dashboard(source: str) -> None:
-    snaps = snapshot_store.list_snapshots(source, latest_only=True)  # newest period first
-    if not snaps:
-        st.info(f"No saved {source} periods yet. Upload a file above and save it.")
+def _find(snaps: list[dict], period: tuple[str, str] | None) -> dict | None:
+    """The saved snapshot of this source for one (start, end) period, or None."""
+    if period is None:
+        return None
+    return next((s for s in snaps if (s["period_start"], s["period_end"]) == period), None)
+
+
+def _nice_time(iso: str) -> str:
+    return datetime.fromisoformat(iso).strftime("%d %b %Y, %H:%M UTC")
+
+
+def render_source(source: str, period: tuple[str, str], compare_period: tuple[str, str] | None) -> None:
+    st.header(source)
+    snaps = snapshot_store.list_snapshots(source, latest_only=True)
+    current = _find(snaps, period)
+    if current is None:
+        st.info(f"No saved {source} data for {period[0]} to {period[1]}.")
         return
+    previous = _find(snaps, compare_period)
+    if compare_period and previous is None:
+        st.info(f"No saved {source} data for {compare_period[0]} to {compare_period[1]}, so no comparison is shown.")
 
-    pick_col, compare_col = st.columns(2)
-    current = snaps[pick_col.selectbox("Period", range(len(snaps)), format_func=lambda i: _label(snaps[i]), key=f"cur:{source}")]
-    others = [s for s in snaps if s["id"] != current["id"]]
-    previous = None
-    if others:
-        choice = compare_col.selectbox(
-            "Compare with", [None] + list(range(len(others))),
-            format_func=lambda i: "No comparison" if i is None else _label(others[i]), key=f"prev:{source}",
-        )
-        previous = None if choice is None else others[choice]
-
-    # Rows: with comparison if a second period is chosen.
+    # Rows: with comparison if a second period is available.
     if previous:
         comp = comparison.compare_snapshots(current, previous)
         for message in comp.errors:
@@ -144,7 +148,7 @@ def source_dashboard(source: str) -> None:
         rows = _plain_rows(current)
 
     st.caption(
-        f"Saved {current['saved_at']} from {', '.join(current.get('source_files', []))} "
+        f"Saved {_nice_time(current['saved_at'])} from {', '.join(current.get('source_files', []))} "
         f"- {current['period_days']} days - KPI version {current.get('kpi_version', '?')}"
     )
 
@@ -163,10 +167,10 @@ def source_dashboard(source: str) -> None:
             with column:
                 _breakdown_chart(row, previous["period_start"] if previous else None, current["period_start"])
 
-    # Trend across all saved periods
+    # Trend across all saved periods of this source
     numeric = [(k, v["name"]) for k, v in current["kpis"].items() if v["kind"] != "breakdown"]
     if len(snaps) >= 2 and numeric:
-        with st.expander("Trend across saved periods"):
+        with st.expander(f"{source}: trend across saved periods"):
             key = st.selectbox("KPI", [k for k, _ in numeric], format_func=dict(numeric).get, key=f"trend:{source}")
             points = comparison.trend_series(snaps, key)
             if len(points) >= 2:
@@ -177,7 +181,7 @@ def source_dashboard(source: str) -> None:
                 st.caption("This KPI exists in fewer than two saved periods.")
 
     if current.get("skipped_kpis"):
-        with st.expander(f"{len(current['skipped_kpis'])} KPI(s) skipped"):
+        with st.expander(f"{source}: {len(current['skipped_kpis'])} KPI(s) skipped"):
             for item in current["skipped_kpis"]:
                 st.write(f"- **{item['name']}**: {item['reason']}")
 
@@ -186,12 +190,34 @@ def source_dashboard(source: str) -> None:
 # Page
 # =============================================================================
 st.title("KPI Dashboard")
-upload_section()
+with st.expander("Upload files", expanded=not snapshot_store.list_snapshots(latest_only=True)):
+    upload_section()
+all_snaps = snapshot_store.list_snapshots(latest_only=True)  # read again: the upload above may have just saved
 
-st.divider()
-st.subheader("Saved periods")
-for tab, name in zip(st.tabs(SOURCE_NAMES), SOURCE_NAMES):
-    with tab:
-        source_dashboard(name)
+# One shared period for every section: only periods that have been saved are offered.
+periods = sorted({(s["period_start"], s["period_end"]) for s in all_snaps}, reverse=True)
+if not periods:
+    st.info("No saved data yet. Upload files above and save them.")
+    st.stop()
 
-st.caption("Saved periods live in memory and are lost when the server restarts. Set STORE_BACKEND=sqlite to keep them.")
+pick_col, compare_col, ppt_col = st.columns([2, 2, 1])
+period = periods[pick_col.selectbox("Period", range(len(periods)), format_func=lambda i: f"{periods[i][0]} to {periods[i][1]}")]
+others = [p for p in periods if p != period]
+compare_period = None
+if others:
+    choice = compare_col.selectbox(
+        "Compare with", [None] + list(range(len(others))),
+        format_func=lambda i: "No comparison" if i is None else f"{others[i][0]} to {others[i][1]}",
+    )
+    compare_period = None if choice is None else others[choice]
+# ppt_col.write("")  # lines the button up with the pickers
+# ppt_col.button("Generate PPT (coming soon)", disabled=True)
+
+updated = [s["saved_at"] for s in all_snaps if (s["period_start"], s["period_end"]) == period]
+st.caption(f"Reporting period: {period[0]} to {period[1]}  |  Last updated: {_nice_time(max(updated))}")
+
+for name in SOURCE_ORDER:
+    st.divider()
+    render_source(name, period, compare_period)
+
+# st.caption("Saved periods live in memory and are lost when the server restarts. Set STORE_BACKEND=sqlite to keep them.")
