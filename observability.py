@@ -125,34 +125,51 @@ def start_call(step: str, model: str, provider: str, session_id: str | None, tra
         return Call(None)
 
 
-def fetch_calls(limit: int = 100) -> list[dict[str, Any]]:
-    """Latest AI calls of this app, newest first. Raises on connection problems."""
+MAX_PAGES = 50  # safety stop: 50 pages x 1000 = 50,000 calls
+
+
+def fetch_calls(days: int | None = 30) -> list[dict[str, Any]]:
+    """AI calls of this app in the last `days` days (None = all time), newest first.
+    Reads every page from Langfuse. Raises on connection problems."""
+    from datetime import datetime, timedelta, timezone
+
     client = _get_client()
     if client is None:
         raise RuntimeError("Langfuse keys are not set (LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY).")
-    response = client.api.observations.get_many(
-        type="GENERATION",
-        environment=ENVIRONMENT,
-        fields="core,basic,model,usage,metrics",
-        limit=limit,
-    )
-    rows = []
-    for item in response.data:
-        usage = item.usage_details or {}
-        rows.append(
-            {
-                "name": item.name,
-                "start_time": item.start_time,
-                "model": item.model,
-                "cost": item.total_cost,
-                "latency": item.latency,
-                "input_tokens": usage.get("input"),
-                "output_tokens": usage.get("output"),
-                "total_tokens": usage.get("total"),
-                "status": "error" if str(item.level or "").upper() == "ERROR" else "ok",
-                "trace_id": item.trace_id,
-                "session_id": item.session_id,
-            }
-        )
+    since = datetime.now(timezone.utc) - timedelta(days=days) if days else None
+    rows: list[dict[str, Any]] = []
+    cursor = None
+    for _ in range(MAX_PAGES):
+        kwargs: dict[str, Any] = {
+            "type": "GENERATION",
+            "environment": ENVIRONMENT,
+            "fields": "core,basic,model,usage,metrics",
+            "limit": 1000,
+        }
+        if since:
+            kwargs["from_start_time"] = since
+        if cursor:
+            kwargs["cursor"] = cursor
+        response = client.api.observations.get_many(**kwargs)
+        for item in response.data:
+            usage = item.usage_details or {}
+            rows.append(
+                {
+                    "name": item.name,
+                    "start_time": item.start_time,
+                    "model": item.model,
+                    "cost": item.total_cost,
+                    "latency": item.latency,
+                    "input_tokens": usage.get("input"),
+                    "output_tokens": usage.get("output"),
+                    "total_tokens": usage.get("total"),
+                    "status": "error" if str(item.level or "").upper() == "ERROR" else "ok",
+                    "trace_id": item.trace_id,
+                    "session_id": item.session_id,
+                }
+            )
+        cursor = response.meta.cursor if response.meta else None
+        if not cursor:
+            break
     rows.sort(key=lambda r: r["start_time"], reverse=True)
     return rows
