@@ -23,7 +23,7 @@ from typing import Any, Callable
 
 import pandas as pd
 
-KPI_VERSION = "0.2-placeholder"
+KPI_VERSION = "0.3-placeholder"
 
 # ---- Assumed values (confirm with the business) ------------------------------
 # ServiceNow "Stage" values seen in the file: Completed, Cancelled, Paused, In progress
@@ -92,7 +92,35 @@ def avg_business_duration(df: pd.DataFrame) -> float | None:
     mean = _num(df, "business_duration").mean() / 3600
     return round(float(mean), 2) if pd.notna(mean) else None
 
+def _clean_labels(series: pd.Series) -> pd.Series:
+    """Text labels without hidden zero-width or non-breaking spaces; blanks become '(blank)'."""
+    return series.fillna("(blank)").astype(str).str.replace("[\u200b\u00a0]", " ", regex=True).str.strip()
 
+
+def _count_by(df: pd.DataFrame, col: str) -> dict[str, int]:
+    return {str(k): int(v) for k, v in _clean_labels(df[col]).value_counts().items()}
+
+
+def tasks_by_request_type(df: pd.DataFrame) -> dict[str, int]:
+    return _count_by(df, "request_type")
+
+
+def avg_hours_by_request_type(df: pd.DataFrame) -> dict[str, float]:
+    hours = _num(df, "business_duration") / 3600  # file value is in seconds
+    means = hours.groupby(_clean_labels(df["request_type"])).mean().dropna().sort_values(ascending=False)
+    return {str(k): round(float(v), 2) for k, v in means.items()}
+
+
+def tasks_by_region(df: pd.DataFrame) -> dict[str, int]:
+    return _count_by(df, "region")
+
+
+def tasks_by_country(df: pd.DataFrame) -> dict[str, int]:
+    return _count_by(df, "country")
+
+
+def tasks_by_priority(df: pd.DataFrame) -> dict[str, int]:
+    return _count_by(df, "priority")
 # ---- Sprinklr formulas -------------------------------------------------------
 def total_engagements(df: pd.DataFrame) -> float:
     return float(_num(df, "engagements").sum())
@@ -101,7 +129,18 @@ def total_engagements(df: pd.DataFrame) -> float:
 def engagements_by_account_type(df: pd.DataFrame) -> dict[str, float]:
     return _by_category(df, "engagements", "account_type")
 
+def paid_engagements(df: pd.DataFrame) -> float:
+    return float(_num(df, "engagements").sum())
 
+
+def paid_impressions(df: pd.DataFrame) -> float:
+    return float(_num(df, "impressions").sum())
+
+
+def paid_cpm(df: pd.DataFrame) -> float | None:
+    """Cost per 1,000 impressions = spend / impressions x 1000 (worked out from the totals, not summed)."""
+    impressions = _num(df, "impressions").sum()
+    return round(float(_num(df, "spend").sum()) / impressions * 1000, 2) if impressions else None
 def total_ad_spend(df: pd.DataFrame) -> float:
     return float(_num(df, "spend").sum())
 
@@ -127,7 +166,20 @@ def tr_engagement_rate(df: pd.DataFrame) -> float | None:
     # Same definition as the Traackr file: engagements / potential reach, as a percent.
     reach = _num(df, "potential_reach").sum()
     return round(float(_num(df, "engagements").sum()) / reach * 100, 3) if reach else None
+def tr_vit_score(df: pd.DataFrame) -> float:
+    return round(float(_num(df, "vit_score").sum()), 2)
 
+
+def tr_visibility(df: pd.DataFrame) -> float:
+    return round(float(_num(df, "visibility").sum()), 2)
+
+
+def tr_impact(df: pd.DataFrame) -> float:
+    return round(float(_num(df, "impact").sum()), 2)
+
+
+def tr_trust(df: pd.DataFrame) -> float:
+    return round(float(_num(df, "trust").sum()), 3)
 
 def tr_engagements_by_brand(df: pd.DataFrame) -> dict[str, float]:
     return _by_category(df, "engagements", "brand", top=10)
@@ -152,6 +204,16 @@ KPIS: list[KPI] = [
         ("sla_definition",), "bar", "count", kind="breakdown"),
     KPI("sn_avg_duration", "Avg business duration", "ServiceNow", avg_business_duration,
         ("business_duration",), "card", "hours"),  # column is in seconds; the formula converts to hours
+    KPI("sn_tasks_by_request_type", "Tasks by request type", "ServiceNow", tasks_by_request_type,
+        ("request_type",), "bar", "count", kind="breakdown", table="requests"),
+    KPI("sn_hours_by_request_type", "Avg hours by request type", "ServiceNow", avg_hours_by_request_type,
+        ("request_type", "business_duration"), "bar", "hours", kind="breakdown", table="requests"),
+    KPI("sn_tasks_by_region", "Tasks by region", "ServiceNow", tasks_by_region,
+        ("region",), "bar", "count", kind="breakdown", table="request_detail"),
+    KPI("sn_tasks_by_country", "Tasks by country", "ServiceNow", tasks_by_country,
+        ("country",), "bar", "count", kind="breakdown", table="request_detail"),
+    KPI("sn_tasks_by_priority", "Tasks by priority", "ServiceNow", tasks_by_priority,
+        ("priority",), "bar", "count", kind="breakdown", table="request_detail"),    
     # Sprinklr
     KPI("sp_total_engagements", "Total engagements", "Sprinklr", total_engagements,
         ("engagements",), "card", "count", table="organic"),
@@ -159,6 +221,12 @@ KPIS: list[KPI] = [
         ("engagements", "account_type"), "bar", "count", kind="breakdown", table="organic"),
     KPI("sp_total_ad_spend", "Total ad spend", "Sprinklr", total_ad_spend,
         ("spend",), "card", "currency", table="paid"),
+    KPI("sp_paid_engagements", "Paid engagements", "Sprinklr", paid_engagements,
+        ("engagements",), "card", "count", table="paid"),
+    KPI("sp_paid_impressions", "Paid impressions", "Sprinklr", paid_impressions,
+        ("impressions",), "card", "count", table="paid"),
+    KPI("sp_cpm", "CPM (cost per 1,000 impressions)", "Sprinklr", paid_cpm,
+        ("spend", "impressions"), "card", "currency", table="paid"),
     # Traackr
     KPI("tr_total_posts", "Total posts", "Traackr", tr_total_posts,
         ("posts",), "card", "count", table="brands_total"),
@@ -170,8 +238,22 @@ KPIS: list[KPI] = [
         ("video_views",), "card", "count", table="brands_total"),
     KPI("tr_engagement_rate", "Engagement rate", "Traackr", tr_engagement_rate,
         ("engagements", "potential_reach"), "card", "%", table="brands_total"),
+    KPI("tr_vit_score", "Brand Vitality Score", "Traackr", tr_vit_score,
+        ("vit_score",), "card", "score", table="brands_total"),
+    KPI("tr_visibility", "Visibility score", "Traackr", tr_visibility,
+        ("visibility",), "card", "score", table="brands_total"),
+    KPI("tr_impact", "Impact score", "Traackr", tr_impact,
+        ("impact",), "card", "score", table="brands_total"),
+    KPI("tr_trust", "Trust score", "Traackr", tr_trust,
+        ("trust",), "card", "score", table="brands_total"),
     KPI("tr_engagements_by_brand", "Top brands by engagements", "Traackr", tr_engagements_by_brand,
         ("engagements", "brand"), "bar", "count", kind="breakdown", table="brands"),
+    KPI("tr_am_total_posts", "Total posts (all markets)", "Traackr", tr_total_posts,
+        ("posts",), "card", "count", table="all_markets_total"),
+    KPI("tr_am_total_engagements", "Total engagements (all markets)", "Traackr", tr_total_engagements,
+        ("engagements",), "card", "count", table="all_markets_total"),
+    KPI("tr_am_engagements_by_brand", "Top brands by engagements (all markets)", "Traackr", tr_engagements_by_brand,
+        ("engagements", "brand"), "bar", "count", kind="breakdown", table="all_markets"),
     KPI("tr_campaign_count", "Campaigns", "Traackr", tr_campaign_count,
         ("start_date",), "card", "count", table="campaigns"),
     KPI("tr_campaign_spend", "Campaign spend", "Traackr", tr_campaign_spend,

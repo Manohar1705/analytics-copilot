@@ -47,6 +47,27 @@ SOURCES: dict[str, dict] = {
             },
         },
     },
+            "requests": {  # the "Sheet1" tab: one row per task with its request type
+                "signature": ("Number", "Short Description", "Business duration", "Created"),
+                "columns": {
+                    "Short Description": "request_type",
+                    "Business duration": "business_duration",
+                    "Created": "created",
+                },
+                "prefer": (),
+                "dates": ("created",),
+            },
+            "request_detail": {  # the "July" tab: priority, region, country
+                "signature": ("Number", "Priority", "Region", "Country", "Opened"),
+                "columns": {
+                    "Priority": "priority",
+                    "Region": "region",
+                    "Country": "country",
+                    "Opened": "opened",
+                },
+                "prefer": (),
+                "dates": ("opened",),
+            },    
     "Sprinklr": {
         "period_rule": "title_text",  # "TIME_INTERVAL: From:08-01-26 To:08-31-26"
         "tables": {
@@ -85,10 +106,29 @@ SOURCES: dict[str, dict] = {
                     "Est Impressions": "est_impressions",
                     "Video Views": "video_views",
                     "Potential Reach": "potential_reach",
+                    "Brand Vitality Score (VIT)": "vit_score",
+                    "Visibilty": "visibility",  # sic: the export spells it this way
+                    "Visibility": "visibility",
+                    "Impact": "impact",
+                    "Trust": "trust",
                 },
                 "prefer": ("diageo brands",),  # "all markets" has the same columns - assumption, confirm
                 "dates": (),
                 "total_row": {"column": "brand", "labels": ("total", "grand total"), "into": "brands_total"},
+            },
+            "all_markets": {  # the "all markets" tab: same columns as "diageo brands", wider scope
+                "signature": ("Keyword Group", "Posts", "Engagements", "Potential Reach"),
+                "columns": {
+                    "Keyword Group": "brand",
+                    "Posts": "posts",
+                    "Engagements": "engagements",
+                    "Est Impressions": "est_impressions",
+                    "Video Views": "video_views",
+                    "Potential Reach": "potential_reach",
+                },
+                "prefer": ("all markets",),
+                "dates": (),
+                "total_row": {"column": "brand", "labels": ("total", "grand total"), "into": "all_markets_total"},
             },
             "campaigns": {
                 "signature": ("Start Date", "End Date", "Creators", "Total Spend"),
@@ -108,8 +148,16 @@ SOURCES: dict[str, dict] = {
 TOTAL_TABLES = {rule["total_row"]["into"] for spec in SOURCES.values() for rule in spec["tables"].values() if "total_row" in rule}
 # Files that cover many periods: keep only rows inside the chosen period.
 DATE_FILTERS: dict[str, tuple[str, str]] = {"ServiceNow": ("main", "created")}
-
+# Other tables of the same file that are also cut to the chosen period: source -> {table: date column}.
+EXTRA_DATE_FILTERS: dict[str, dict[str, str]] = {"ServiceNow": {"requests": "created", "request_detail": "opened"}}
+# Common column names that must hold numbers. sources.py only warns about bad values, it never changes the data.
+NUMBER_COLUMNS = (
+    "business_duration", "engagements", "reach", "spend", "impressions",
+    "posts", "est_impressions", "video_views", "potential_reach", "total_spend",
+    "vit_score", "visibility", "impact", "trust",
+)
 PROBE_ROWS = 15
+MAX_SHEET_ROWS = 100_000  # a tab can claim a million blank rows (slow); real data ends well before this
 TITLE_PERIOD = re.compile(r"From:\s*(\d{2}-\d{2}-\d{2,4})\s*To:\s*(\d{2}-\d{2}-\d{2,4})", re.IGNORECASE)
 
 
@@ -184,17 +232,43 @@ def validate_period(start: date | None, end: date | None) -> list[str]:
     return []
 
 
+def _cut(df: pd.DataFrame, column: str, start: date, end: date) -> pd.DataFrame:
+    """Rows whose date column falls inside the period (end day included)."""
+    stamps = pd.to_datetime(df[column], errors="coerce")
+    inside = (stamps >= pd.Timestamp(start)) & (stamps < pd.Timestamp(end) + timedelta(days=1))
+    return df[inside].reset_index(drop=True)
+
+
 def apply_period(source: str, tables: dict[str, pd.DataFrame], start: date, end: date) -> dict[str, pd.DataFrame]:
     """Keep only rows inside the period (only for sources that hold many periods)."""
     rule = DATE_FILTERS.get(source)
     if not rule or rule[0] not in tables:
         return tables
     table, column = rule
-    df = tables[table]
-    stamps = pd.to_datetime(df[column], errors="coerce")
-    inside = (stamps >= pd.Timestamp(start)) & (stamps < pd.Timestamp(end) + timedelta(days=1))
-    return {**tables, table: df[inside].reset_index(drop=True)}
-
+    cut = {**tables, table: _cut(tables[table], column, start, end)}
+    for name, col in EXTRA_DATE_FILTERS.get(source, {}).items():
+        if name in cut and col in cut[name].columns:
+            cut[name] = _cut(cut[name], col, start, end)
+    return cut
+def check_numbers(df: pd.DataFrame, sheet: str, names: dict[str, str]) -> list[str]:
+    """Warnings for text or negative values in number columns. names: common name -> real column name."""
+    notes = []
+    for column in NUMBER_COLUMNS:
+        if column not in df.columns:
+            continue
+        raw = df[column]
+        if pd.api.types.is_numeric_dtype(raw):
+            numbers, text_count = raw, 0
+        else:  # same cleaning as kpi_config._num: "$52.63" and "1,200" are fine
+            numbers = pd.to_numeric(raw.astype(str).str.replace(r"[^0-9.\-]", "", regex=True), errors="coerce")
+            text_count = int((raw.notna() & numbers.isna()).sum())
+        negative_count = int((numbers < 0).sum())
+        label = names.get(column, column)
+        if text_count:
+            notes.append(f"Sheet '{sheet}': {text_count} value(s) in '{label}' are not numbers. They are left out of the totals.")
+        if negative_count:
+            notes.append(f"Sheet '{sheet}': {negative_count} negative value(s) in '{label}'. Please check the file.")
+    return notes
 
 # ---- Period detection ----------------------------------------------------------
 def _detect_period(result: FileResult, titles: list[str]) -> None:
@@ -301,7 +375,9 @@ def _inspect(result: FileResult, data: bytes) -> None:
         header = probes[chosen][0]
         lookup = {_norm(k): v for k, v in rule["columns"].items()}
 
-        df = book.parse(chosen, header=header, usecols=lambda c: _norm(c) in lookup)
+        df = book.parse(chosen, header=header, usecols=lambda c: _norm(c) in lookup, nrows=MAX_SHEET_ROWS)
+        if len(df) >= MAX_SHEET_ROWS:
+            result.warnings.append(f"Sheet '{chosen}' has more than {MAX_SHEET_ROWS:,} rows. Only the first {MAX_SHEET_ROWS:,} were read.")
         df = df.rename(columns=lambda c: lookup.get(_norm(c), c))
         df = df[[c for c in df.columns if c in lookup.values()]].dropna(how="all")
         total_rule = rule.get("total_row")
@@ -326,6 +402,7 @@ def _inspect(result: FileResult, data: bytes) -> None:
         missing = [common for common in rule["columns"].values() if common not in df.columns]
         if missing:
             result.warnings.append(f"Sheet '{chosen}' is missing {', '.join(missing)}: KPIs that need them will be skipped.")
+        result.warnings.extend(check_numbers(df, chosen, {v: k for k, v in rule["columns"].items()}))
         result.tables[table] = df.reset_index(drop=True)
         result.table_sheets[table] = chosen
         titles.append(probes[chosen][2])
@@ -340,7 +417,8 @@ def _inspect(result: FileResult, data: bytes) -> None:
     _detect_period(result, titles)
     if result.period_start and result.period_end:
         inside = apply_period(result.source, result.tables, result.period_start, result.period_end)
-        result.row_count = sum(len(df) for name, df in inside.items() if name not in TOTAL_TABLES)
+        main_table = DATE_FILTERS.get(result.source, (None,))[0]  # many-period files: count the main table only
+        result.row_count = len(inside[main_table]) if main_table in inside else sum(len(df) for name, df in inside.items() if name not in TOTAL_TABLES)
     else:
         result.row_count = sum(len(df) for name, df in result.tables.items() if name not in TOTAL_TABLES)
         result.warnings.append("Period could not be detected. Enter it before saving.")
