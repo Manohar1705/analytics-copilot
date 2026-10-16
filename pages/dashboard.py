@@ -65,6 +65,23 @@ def upload_section() -> None:
             for message in problems:
                 st.error(message)
                 all_ok = False
+            if not problems:
+                inside = sources.apply_period(result.source, result.tables, start, end)
+                counts = []
+                for table, df in result.tables.items():
+                    if table in sources.TOTAL_TABLES:
+                        continue
+                    in_period = len(inside[table])
+                    counts.append(f"{result.table_sheets[table]}: {len(df):,} rows" + (f" ({in_period:,} in this period)" if in_period != len(df) else ""))
+                st.caption("Rows read - " + "; ".join(counts))
+            if result.skipped_sheets:
+                st.caption("Sheets not read - " + ", ".join(result.skipped_sheets))
+            if result.source not in sources.DATE_FILTERS:
+                detected = (result.period_start, result.period_end)
+                if detected[0] and (start, end) != detected:
+                    st.warning(f"The detected period is {detected[0]} to {detected[1]}. {result.source} numbers cover the whole file, so changing the dates only changes the label.")
+                else:
+                    st.caption(f"{result.source}: the period is only a label. The numbers cover the whole file and do not change with the dates.")
             ready.append((file.name, result, start, end))
 
     if st.button(f"Calculate and save {len(ready)} file(s)", type="primary", disabled=not ready or not all_ok):
@@ -151,7 +168,9 @@ def render_source(source: str, period: tuple[str, str], compare_period: tuple[st
         f"Saved {_nice_time(current['saved_at'])} from {', '.join(current.get('source_files', []))} "
         f"- {current['period_days']} days - KPI version {current.get('kpi_version', '?')}"
     )
-
+    note = comparison.partial_note(current)
+    if note and not previous:
+        st.warning(note)
     # KPI cards
     cards = [r for r in rows if r["kind"] != "breakdown"]
     for start in range(0, len(cards), CARDS_PER_ROW):
@@ -203,10 +222,12 @@ if not periods:
 pick_col, compare_col, ppt_col = st.columns([2, 2, 1])
 period = periods[pick_col.selectbox("Period", range(len(periods)), format_func=lambda i: f"{periods[i][0]} to {periods[i][1]}")]
 others = [p for p in periods if p != period]
+older = [p for p in others if p < period]  # saved periods before the chosen one, newest first
 compare_period = None
 if others:
+    default = 1 + others.index(older[0]) if older else 0  # pre-select the previous period
     choice = compare_col.selectbox(
-        "Compare with", [None] + list(range(len(others))),
+        "Compare with", [None] + list(range(len(others))), index=default,
         format_func=lambda i: "No comparison" if i is None else f"{others[i][0]} to {others[i][1]}",
     )
     compare_period = None if choice is None else others[choice]

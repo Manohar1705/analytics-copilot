@@ -48,6 +48,12 @@ def _category_rows(current: dict | None, previous: dict | None, unit: str) -> li
         rows.append({"label": label, "current": cur, "previous": prev, **_delta(cur, prev, unit)})
     return rows
 
+def partial_note(snapshot: dict) -> str | None:
+    """Text when the file's data ends before the period end (ISO dates compare correctly as text)."""
+    covered, end = snapshot.get("data_covered_to"), snapshot.get("period_end")
+    if covered and end and covered < end:
+        return f"{snapshot['source']} data for {snapshot['period_start']} to {end} only goes up to {covered}."
+    return None
 
 # ---- Main comparison ---------------------------------------------------------------
 def compare_snapshots(current: dict | None, previous: dict | None) -> Comparison:
@@ -70,6 +76,10 @@ def compare_snapshots(current: dict | None, previous: dict | None) -> Comparison
             f"The periods have different lengths ({days_now} days vs {days_before} days), "
             "so totals are not directly comparable."
         )
+    for snap in (current, previous):
+        note = partial_note(snap)
+        if note:
+            out.warnings.append(note + " The comparison may be misleading.")
     if current.get("kpi_version") != previous.get("kpi_version"):
         out.warnings.append("The two snapshots were calculated with different KPI definitions.")
 

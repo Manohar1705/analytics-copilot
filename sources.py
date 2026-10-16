@@ -29,7 +29,7 @@ import pandas as pd
 # columns   : real column name -> common name used by kpi_config.py
 # prefer    : if several sheets match, use the one with this name (lower-case)
 # dates     : common columns to convert to dates
-# exclude   : rows to ignore, e.g. a "Total" row that would be counted twice
+# total_row : a "Total" row inside the sheet. It is kept as its own one-row table (into) so headline numbers match the file
 SOURCES: dict[str, dict] = {
     "ServiceNow": {
         "period_rule": "month_of_latest_date",  # file spans many months -> default to the latest month
@@ -88,7 +88,7 @@ SOURCES: dict[str, dict] = {
                 },
                 "prefer": ("diageo brands",),  # "all markets" has the same columns - assumption, confirm
                 "dates": (),
-                "exclude": {"brand": ("total", "grand total")},
+                "total_row": {"column": "brand", "labels": ("total", "grand total"), "into": "brands_total"},
             },
             "campaigns": {
                 "signature": ("Start Date", "End Date", "Creators", "Total Spend"),
@@ -104,7 +104,8 @@ SOURCES: dict[str, dict] = {
         },
     },
 }
-
+# Tables made from a sheet's Total row (one row each). They are not data rows, so they are not counted as rows read.
+TOTAL_TABLES = {rule["total_row"]["into"] for spec in SOURCES.values() for rule in spec["tables"].values() if "total_row" in rule}
 # Files that cover many periods: keep only rows inside the chosen period.
 DATE_FILTERS: dict[str, tuple[str, str]] = {"ServiceNow": ("main", "created")}
 
@@ -303,12 +304,18 @@ def _inspect(result: FileResult, data: bytes) -> None:
         df = book.parse(chosen, header=header, usecols=lambda c: _norm(c) in lookup)
         df = df.rename(columns=lambda c: lookup.get(_norm(c), c))
         df = df[[c for c in df.columns if c in lookup.values()]].dropna(how="all")
-        for column, labels in rule.get("exclude", {}).items():
-            if column in df.columns:
-                drop = df[column].map(_norm).isin(labels)
-                if drop.any():
-                    result.warnings.append(f"Ignored {int(drop.sum())} total row(s) in '{chosen}' so they are not counted twice.")
-                df = df[~drop]
+        total_rule = rule.get("total_row")
+        if total_rule and total_rule["column"] in df.columns:
+            is_total = df[total_rule["column"]].map(_norm).isin(total_rule["labels"])
+            totals, df = df[is_total], df[~is_total]
+            if totals.empty:  # no Total row in the file: add the rows up instead
+                sums = df.drop(columns=[total_rule["column"]]).apply(pd.to_numeric, errors="coerce").sum()
+                totals = pd.DataFrame([{total_rule["column"]: "Total (sum of rows)", **sums.to_dict()}])
+                result.warnings.append(f"'{chosen}' has no Total row, so totals are the sum of its rows. Posts shared by several brands may be counted more than once.")
+            else:
+                result.warnings.append(f"Headline totals come from the Total row in '{chosen}'. The brand rows are used only for the brand chart.")
+            result.tables[total_rule["into"]] = totals.head(1).reset_index(drop=True)
+            result.table_sheets[total_rule["into"]] = chosen
         for column in rule["dates"]:
             if column in df.columns:
                 df[column] = pd.to_datetime(df[column], errors="coerce")
@@ -333,8 +340,8 @@ def _inspect(result: FileResult, data: bytes) -> None:
     _detect_period(result, titles)
     if result.period_start and result.period_end:
         inside = apply_period(result.source, result.tables, result.period_start, result.period_end)
-        result.row_count = sum(len(df) for df in inside.values())
+        result.row_count = sum(len(df) for name, df in inside.items() if name not in TOTAL_TABLES)
     else:
-        result.row_count = sum(len(df) for df in result.tables.values())
+        result.row_count = sum(len(df) for name, df in result.tables.items() if name not in TOTAL_TABLES)
         result.warnings.append("Period could not be detected. Enter it before saving.")
     result.ok = True

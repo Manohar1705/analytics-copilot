@@ -140,6 +140,8 @@ def _calculate(out: CalcResult, file_result: sources.FileResult, start: date | N
     for item in skipped_info:
         out.warnings.append(f"KPI '{item['name']}' skipped: {item['reason']}.")
     out.warnings.extend(file_result.warnings)
+    if file_result.available_range and file_result.available_range[1] < end:
+        out.warnings.append(f"The file only has data up to {file_result.available_range[1]}, before the period end {end}. The numbers cover only part of the period.")
 
     out.snapshot = {
         "source": file_result.source,
@@ -153,5 +155,6 @@ def _calculate(out: CalcResult, file_result: sources.FileResult, start: date | N
         "source_files": [file_result.file_name],
         "sheets_used": dict(file_result.table_sheets),
         "kpi_version": KPI_VERSION,
+        "data_covered_to": file_result.available_range[1].isoformat() if file_result.available_range else None,
     }
     out.ok = True

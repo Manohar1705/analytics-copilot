@@ -88,7 +88,8 @@ def tasks_by_sla(df: pd.DataFrame) -> dict[str, int]:
 
 
 def avg_business_duration(df: pd.DataFrame) -> float | None:
-    mean = _num(df, "business_duration").mean()
+    """Average business duration in HOURS. The ServiceNow column is in seconds, so divide by 3600."""
+    mean = _num(df, "business_duration").mean() / 3600
     return round(float(mean), 2) if pd.notna(mean) else None
 
 
@@ -150,7 +151,7 @@ KPIS: list[KPI] = [
     KPI("sn_tasks_by_sla", "Tasks by SLA type", "ServiceNow", tasks_by_sla,
         ("sla_definition",), "bar", "count", kind="breakdown"),
     KPI("sn_avg_duration", "Avg business duration", "ServiceNow", avg_business_duration,
-        ("business_duration",), "card", "hours"),  # unit is a guess - confirm
+        ("business_duration",), "card", "hours"),  # column is in seconds; the formula converts to hours
     # Sprinklr
     KPI("sp_total_engagements", "Total engagements", "Sprinklr", total_engagements,
         ("engagements",), "card", "count", table="organic"),
@@ -160,15 +161,15 @@ KPIS: list[KPI] = [
         ("spend",), "card", "currency", table="paid"),
     # Traackr
     KPI("tr_total_posts", "Total posts", "Traackr", tr_total_posts,
-        ("posts",), "card", "count", table="brands"),
+        ("posts",), "card", "count", table="brands_total"),
     KPI("tr_total_engagements", "Total engagements", "Traackr", tr_total_engagements,
-        ("engagements",), "card", "count", table="brands"),
+        ("engagements",), "card", "count", table="brands_total"),
     KPI("tr_total_impressions", "Est. impressions", "Traackr", tr_total_impressions,
-        ("est_impressions",), "card", "count", table="brands"),
+        ("est_impressions",), "card", "count", table="brands_total"),
     KPI("tr_total_video_views", "Video views", "Traackr", tr_total_video_views,
-        ("video_views",), "card", "count", table="brands"),
+        ("video_views",), "card", "count", table="brands_total"),
     KPI("tr_engagement_rate", "Engagement rate", "Traackr", tr_engagement_rate,
-        ("engagements", "potential_reach"), "card", "%", table="brands"),
+        ("engagements", "potential_reach"), "card", "%", table="brands_total"),
     KPI("tr_engagements_by_brand", "Top brands by engagements", "Traackr", tr_engagements_by_brand,
         ("engagements", "brand"), "bar", "count", kind="breakdown", table="brands"),
     KPI("tr_campaign_count", "Campaigns", "Traackr", tr_campaign_count,
