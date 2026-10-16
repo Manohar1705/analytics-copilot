@@ -45,8 +45,6 @@ SOURCES: dict[str, dict] = {
                 "prefer": ("raw data",),
                 "dates": ("created",),
             },
-        },
-    },
             "requests": {  # the "Sheet1" tab: one row per task with its request type
                 "signature": ("Number", "Short Description", "Business duration", "Created"),
                 "columns": {
@@ -67,7 +65,9 @@ SOURCES: dict[str, dict] = {
                 },
                 "prefer": (),
                 "dates": ("opened",),
-            },    
+            },
+        },
+    },   
     "Sprinklr": {
         "period_rule": "title_text",  # "TIME_INTERVAL: From:08-01-26 To:08-31-26"
         "tables": {
