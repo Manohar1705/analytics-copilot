@@ -201,6 +201,8 @@ def _change_table(row: dict, previous_label: str | None, current_label: str) -> 
 
 def _breakdown_chart(source: str, row: dict, chart_type: str, previous_label: str | None, current_label: str) -> None:
     kind, note = _chart_kind(chart_type, row["unit"], row["current"])
+    if kind == "donut" and previous_label and row.get("categories"):
+        kind = "bar"  # same rule as the report: two months are shown as grouped bars
     key = f"chart:{source}:{row['key']}"
     if kind == "donut":
         st.plotly_chart(_donut_figure(row), width="stretch", key=key)
@@ -228,6 +230,17 @@ def _trend_section(source: str, current: dict, snaps: list[dict]) -> None:
     fig = px.line(pd.DataFrame(points), x="label", y="value", markers=True, color_discrete_sequence=PALETTE)
     fig.update_layout(xaxis_title=None, yaxis_title=current["kpis"][key]["unit"], margin=dict(t=10))
     st.plotly_chart(fig, width="stretch", key=f"trendchart:{source}")
+
+
+def _table_section(source: str, current: dict, previous: dict | None) -> None:
+    """The same top-10 table as the report slide. It calls the report's own builder, so rows and columns always match."""
+    spec = report_deck._table_slide(source, current, previous)
+    if not spec:
+        return
+    st.markdown("**" + spec["title"].split(": ", 1)[-1] + "**")
+    st.dataframe(pd.DataFrame(spec["rows"], columns=spec["columns"]), hide_index=True, width="stretch")
+    for line in spec["insights"]:
+        st.caption(line)
 
 
 def _find(snaps: list[dict], period: tuple[str, str] | None) -> dict | None:
@@ -326,6 +339,9 @@ def render_source(source: str, period: tuple[str, str], compare_period: tuple[st
             with column:
                 chart_type = current["kpis"].get(row["key"], {}).get("chart_type", "bar")
                 _breakdown_chart(source, row, chart_type, previous["period_start"] if previous else None, current["period_start"])
+
+    # Top-10 table (same one as the report)
+    _table_section(source, current, previous)
 
     # Trend across all saved periods of this source
     _trend_section(source, current, snaps)

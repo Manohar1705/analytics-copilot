@@ -36,11 +36,11 @@ POINT_FLAG = 3.0              # a % KPI (e.g. completion rate) is flagged when i
 CATEGORY_FLAG_PCT = 25.0      # a category inside a breakdown is flagged when it moves this % or more ...
 CATEGORY_MIN_BASE = 5         # ... and its previous value was at least this big (ignores tiny bases)
 CONCENTRATION_PCT = 90.0      # a breakdown is flagged when one value holds this share of the total or more
-MAX_INSIGHTS = 5              # most insights shown per source
+MAX_INSIGHTS = 8              # most insights shown per source
 STAT_MIN_VALUES = 5           # a breakdown needs at least this many values for the top-3 / average / gap sentences
 TOP_N = 3                     # how many top values the "top N hold X%" sentence counts
-MAX_RECOMMENDATIONS = 4       # most recommendations shown per source
-INSIGHT_MAX_TOKENS = 900
+MAX_RECOMMENDATIONS = 8       # most recommendations shown per source
+INSIGHT_MAX_TOKENS = 1800
 
 # Limits per KPI key. Empty until your lead gives real values. Example:
 #   "sn_completion_rate": {"min": 90},   "sn_avg_duration": {"max": 4},
@@ -221,7 +221,7 @@ def build_facts(current: dict, previous: dict | None) -> tuple[list[Fact], list[
             elif polarity == 0:
                 advice = f"Check what changed in {name} compared with the previous period."
             else:
-                advice = ""  # it improved: nothing to fix
+                advice = f"{name} moved in the right direction against the previous period; keep the current approach and confirm it holds next period."
             add(Fact("", key, "change", text, True, direction, advice, 50 + min(size, 200) / 4 + (10 if worse else 0)))
             continue
 

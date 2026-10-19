@@ -22,8 +22,6 @@ KPIS_PER_SLIDE = 8        # pptx_writer.MAX_KPIS
 MAX_BARS = 12
 MAX_DONUT_SLICES = 8      # same chart rule as pages/dashboard.py
 SKEW_LIMIT = 0.75
-NO_ACTION = "No action needed from the current numbers."
-NO_INSIGHT = "The figures for this period are shown above."
 MAX_PER_SLIDE = 4         # insights shown in one slide box
 MAX_RECS_PER_SLIDE = 2    # recommendations shown in one slide box
 MAX_CLOSING = 6           # recommendations on one closing slide (pptx_writer shows 6)
@@ -48,25 +46,100 @@ def _plain_rows(snapshot: dict) -> list[dict]:
             for k, v in snapshot["kpis"].items()]
 
 
-def _lines(keys: set[str], result: "insights.InsightResult", facts: list["insights.Fact"]) -> tuple[list[str], list[str]]:
-    """Insights and recommendations for the KPIs in `keys`: the shown (checked) lines first, then plain facts until the box is full."""
+def _row_insight(r: dict) -> str | None:
+    """One real sentence from a KPI row's own numbers (used when no rule fact exists)."""
+    name, unit, value = r["name"], r.get("unit", ""), r.get("current")
+    if r.get("kind") == "breakdown":
+        values = {k: v for k, v in (value or {}).items() if _is_number(v)}
+        if not values:
+            return None
+        top, low = max(values, key=values.get), min(values, key=values.get)
+        text = f"{top} is the largest in {name} at {comparison.format_value(values[top], unit)}"
+        total = sum(v for v in values.values() if v > 0)
+        if unit == "count" and total > 0:
+            text += f", {values[top] / total * 100:.1f}% of the total"
+        if low != top:
+            text += f"; {low} is the lowest at {comparison.format_value(values[low], unit)}"
+        return text + "."
+    if not _is_number(value):
+        return None
+    text = f"{name} is {comparison.format_value(value, unit)}"
+    prev, change, pct = r.get("previous"), r.get("change"), r.get("pct_change")
+    if _is_number(prev) and _is_number(change):
+        before = comparison.format_value(prev, unit)
+        if change == 0:
+            text += f", unchanged from {before} in the previous period"
+        elif unit == "%":
+            text += f", {'up' if change > 0 else 'down'} {abs(change):.2f} points from {before}"
+        elif pct is not None:
+            text += f", {'up' if change > 0 else 'down'} {abs(pct):.1f}% from {before}"
+        else:
+            text += f", {'up' if change > 0 else 'down'} from {before}"
+    return text + "."
+
+
+def _row_advice(r: dict) -> str | None:
+    """One specific recommendation for a KPI row: worse, better or steady."""
+    name, unit, value = r["name"], r.get("unit", ""), r.get("current")
+    if r.get("kind") == "breakdown":
+        values = {k: v for k, v in (value or {}).items() if _is_number(v)}
+        if len(values) < 2:
+            return f"Keep tracking {name} next period."
+        top, low = max(values, key=values.get), min(values, key=values.get)
+        total = sum(v for v in values.values() if v > 0)
+        if unit == "count" and total > 0 and values[top] / total >= 0.5:
+            return f"Check whether {top} holding {values[top] / total * 100:.0f}% of {name} is intended, and look at {low} for room to grow."
+        return f"Compare {low} with {top} in {name} and decide whether the gap needs action."
+    change = r.get("change")
+    polarity = insights.POLARITY.get(r["key"], 0)
+    if _is_number(change) and change != 0:
+        worse = (polarity > 0 and change < 0) or (polarity < 0 and change > 0)
+        if worse:
+            return f"Review {name}: it moved the wrong way against the previous period."
+        if polarity != 0:
+            return f"{name} moved in the right direction; keep the current approach and confirm it holds next period."
+        return f"Check what changed in {name} compared with the previous period."
+    return f"Keep tracking {name} next period; this period's value is the baseline to compare against."
+
+
+def _lines(keys: set[str], result: "insights.InsightResult", facts: list["insights.Fact"], rows: list[dict] | None = None) -> tuple[list[str], list[str]]:
+    """Insights and recommendations for the KPIs in `keys`: checked lines first, then rule facts,
+    then sentences built from the slide's own KPI rows. Never returns filler text."""
     shown = [l for l in result.insights if l.kpi in keys]
     found = [l.text for l in shown]
     used = {l.fact_id for l in shown}
+    seen = {l.kpi for l in shown}
     for fact in facts:
         if len(found) >= MAX_PER_SLIDE:
             break
         if fact.kpi in keys and fact.id not in used:
             found.append(fact.text)
+            seen.add(fact.kpi)
     shown_rec = [l for l in result.recommendations if l.kpi in keys]
     advice = [l.text for l in shown_rec]
     used_rec = {l.fact_id for l in shown_rec}
+    seen_rec = {l.kpi for l in shown_rec}
     for fact in facts:
         if len(advice) >= MAX_RECS_PER_SLIDE:
             break
         if fact.kpi in keys and fact.advice and fact.id not in used_rec:
             advice.append(fact.advice)
-    return found or [NO_INSIGHT], advice or [NO_ACTION]
+            seen_rec.add(fact.kpi)
+    # guarantee: real sentences from this slide's own numbers, biggest movers first
+    ranked = sorted(rows or [], key=lambda r: -(abs(r["pct_change"]) if _is_number(r.get("pct_change")) else 0))
+    for r in ranked:
+        if len(found) >= MAX_PER_SLIDE:
+            break
+        text = _row_insight(r)
+        if text and r["key"] not in seen and text not in found:
+            found.append(text)
+    for r in ranked:
+        if len(advice) >= MAX_RECS_PER_SLIDE:
+            break
+        text = _row_advice(r)
+        if text and r["key"] not in seen_rec and text not in advice:
+            advice.append(text)
+    return found, advice
 
 
 def _source_slides(source: str, current: dict, previous: dict | None, result: "insights.InsightResult") -> list[dict]:
@@ -82,7 +155,7 @@ def _source_slides(source: str, current: dict, previous: dict | None, result: "i
     for number, start in enumerate(range(0, len(singles), KPIS_PER_SLIDE), start=1):
         chunk = singles[start:start + KPIS_PER_SLIDE]
         keys = {r["key"] for r in chunk} | ({"_steady"} if number == 1 else set())
-        ins, rec = _lines(keys, result, facts)
+        ins, rec = _lines(keys, result, facts, chunk)
         if number == 1 and comparison.partial_note(current):
             ins = [comparison.partial_note(current)] + ins  # warn that the month is only partly covered
         suffix = f" ({number})" if len(singles) > KPIS_PER_SLIDE else ""
@@ -100,6 +173,8 @@ def _source_slides(source: str, current: dict, previous: dict | None, result: "i
             continue
         chart_type = current["kpis"].get(row["key"], {}).get("chart_type", "bar")
         kind = _chart_kind(chart_type, row["unit"], values)
+        if comparing and row.get("categories"):
+            kind = "bar"  # a donut cannot show two months, so compare with grouped bars
         fmt = "#,##0" if row["unit"] == "count" else "#,##0.00"
         now_label = current["period_start"]
         if kind == "donut":
@@ -113,7 +188,7 @@ def _source_slides(source: str, current: dict, previous: dict | None, result: "i
         else:
             top = sorted(values.items(), key=lambda kv: -kv[1])[:MAX_BARS]
             categories, series = [k for k, _ in top], [{"name": now_label, "values": [v for _, v in top]}]
-        ins, rec = _lines({row["key"]}, result, facts)
+        ins, rec = _lines({row["key"]}, result, facts, [row])
         slides.append({
             "type": kind, "title": f"{source}: {row['name']}", "chart_title": row["name"], "source": files,
             "categories": categories, "series": series, "number_format": fmt,
@@ -127,7 +202,7 @@ def _closing_items(slides: list[dict]) -> list[dict]:
     items, seen = [], set()
     for rank in range(MAX_RECS_PER_SLIDE):  # first the best recommendation of every slide, then the second ones
         for slide in slides:
-            recs = [t for t in slide["recommendation"] if t != NO_ACTION]
+            recs = [t for t in slide["recommendation"] if t]
             if rank < len(recs) and recs[rank] not in seen:
                 seen.add(recs[rank])
                 heading = slide.get("chart_title") or slide["title"].split(": ", 1)[-1].capitalize()
@@ -162,10 +237,15 @@ def _table_slide(source: str, current: dict, previous: dict | None) -> dict | No
     ins = [f"Showing the top {len(top)} of {len(values)} values in {name}."]
     if total:
         ins.append(f"These {len(top)} hold {comparison.format_value(shown, unit)} of {comparison.format_value(total, unit)} ({shown / total * 100:.1f}%).")
+        lead, last_name = top[0][0], top[-1][0]
+        if total and shown / total >= 0.5:
+            rec = [f"Check whether having the top {len(top)} hold {shown / total * 100:.0f}% of {name} is intended, and review {last_name} against {lead}."]
+        else:
+            rec = [f"Track whether {lead} keeps its lead in {name} next period, and look at {last_name} for room to grow."]
     return {
         "type": "table", "title": f"{source}: {name} (table)", "source": ", ".join(current.get("source_files", [])),
         "columns": ["Name", "Current", "Previous", "Change", "Change %"] if comparing else ["Name", "Value", "Share"],
-        "rows": rows, "insights": ins, "recommendation": [NO_ACTION],
+        "rows": rows, "insights": ins, "recommendation": rec,
     }
 def _trend_slide(source: str, current: dict) -> dict | None:
     """One line chart of a headline KPI across the saved periods up to the selected one (None if fewer than 2)."""
@@ -186,7 +266,12 @@ def _trend_slide(source: str, current: dict) -> dict | None:
         ins.append(f"That is a change of {pct:+.1f}% across {len(points)} periods.")
     if comparison.partial_note(current):
         ins.append(comparison.partial_note(current))
-    rec = [f"Find out what drove the {pct:+.1f}% change in {name}."] if pct is not None and abs(pct) >= 10 else [NO_ACTION]
+    if pct is not None and abs(pct) >= 10:
+        rec = [f"Find out what drove the {pct:+.1f}% change in {name}, and check whether the latest period continues the pattern."]
+    elif pct is not None:
+        rec = [f"{name} moved {pct:+.1f}% across {len(points)} periods; keep tracking it monthly and review it if the change passes 10%."]
+    else:
+        rec = [f"Keep tracking {name} monthly; {comparison.format_value(last['value'], unit)} is the latest level."]
     return {
         "type": "line", "title": f"{source}: {name} trend", "chart_title": f"{name} by period",
         "source": ", ".join(current.get("source_files", [])),
@@ -210,7 +295,7 @@ def build(period: tuple[str, str], items: list[tuple[str, dict, dict | None, "in
             slides.append(trend)
         closing = _closing_items(source_slides)
         if closing:
-            slides.append({"type": "summary", "title": f"{source}: key recommendations(Experimental Feature)", "items": closing})
+            slides.append({"type": "summary", "title": f"{source}: key recommendations", "items": closing})
     return {
         "title": "KPI Report",
         "subtitle": f"{period[0]} to {period[1]}",
