@@ -13,15 +13,27 @@ import plotly.express as px
 import streamlit as st
 
 import comparison
+import insights
 import kpi_engine
+import pptx_writer
+import report_deck
 import snapshot_store
 import sources
 
 st.set_page_config(page_title="KPI Dashboard", page_icon="📈", layout="wide")
 
-SOURCE_ORDER = ["ServiceNow", "Traackr", "Sprinklr"]  # order of the sections on the page
+SOURCE_ORDER = ["ServiceNow", "Sprinklr", "Traackr"]  # order of the sections on the page
 CARDS_PER_ROW = 4
 MAX_COMPARE_BARS = 12
+
+# ---- Chart look (change these in one place) ----------------------------------
+PALETTE = ["#73AEF7", "#FA99C7", "#A3A3A3", "#FEE920", "#F59691", "#C4EBC1", "#FFC000", "#8E5572"]  # colours from the report template
+PREVIOUS_COLOR = "#A3A3A3"   # the older period in a comparison chart
+SKEW_LIMIT = 0.75            # a donut is not used when one value holds more than this share
+COLOR_EACH_UP_TO = 8         # bars get one colour each up to this many bars (more bars: one colour)
+MAX_DONUT_SLICES = 8         # a donut is not used with more slices than this
+LONG_LABEL = 14              # bars turn horizontal when a label is longer than this ...
+MANY_LABELS = 6              # ... or when there are more categories than this
 
 
 # =============================================================================
@@ -116,19 +128,106 @@ def _plain_rows(snapshot: dict) -> list[dict]:
     return rows
 
 
-def _breakdown_chart(row: dict, previous_label: str | None, current_label: str) -> None:
-    if row.get("categories") and previous_label:
+# ---- Charts ------------------------------------------------------------------
+def _is_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _chart_kind(chart_type: str, unit: str, values: dict) -> tuple[str, str | None]:
+    """Pick the chart from the shape of the data. Returns (kind, note); kind is "donut" or "bar".
+
+    Donut: counts split into 2 to MAX_DONUT_SLICES parts where no single part dominates (SKEW_LIMIT).
+    Bar: everything else (rankings, many items, averages, one dominant value).
+    chart_type in kpi_config.py is no longer needed.
+    """
+    positives = {k: v for k, v in (values or {}).items() if _is_number(v) and v > 0}
+    if unit != "count" or not 2 <= len(positives) <= MAX_DONUT_SLICES:
+        return "bar", None
+    top = max(positives.values()) / sum(positives.values())
+    if top > SKEW_LIMIT:
+        return "bar", f"Shown as bars: one value holds {top:.0%} of the total, which a donut cannot show clearly."
+    return "donut", None
+
+
+def _bar_figure(row: dict, previous_label: str | None, current_label: str):
+    """Bar chart for one breakdown KPI: grouped by period when a comparison exists."""
+    comparing = bool(row.get("categories") and previous_label)
+    if comparing:
         frame = pd.DataFrame(row["categories"]).rename(columns={"current": current_label, "previous": previous_label})
         frame = frame.sort_values(current_label, ascending=False, na_position="last").head(MAX_COMPARE_BARS)
+        order = list(frame["label"])
         frame = frame.melt(id_vars="label", value_vars=[current_label, previous_label], var_name="Period", value_name="Value")
-        fig = px.bar(frame, x="label", y="Value", color="Period", barmode="group", title=row["name"])
     else:
         values = row["current"] or {}
         frame = pd.DataFrame({"label": list(values.keys()), "Value": list(values.values())})
         frame = frame.sort_values("Value", ascending=False).head(MAX_COMPARE_BARS)
-        fig = px.bar(frame, x="label", y="Value", title=row["name"])
-    fig.update_layout(xaxis_title=None, yaxis_title=row["unit"], margin=dict(t=50, b=10))
-    st.plotly_chart(fig, width="stretch")
+        order = list(frame["label"])
+
+    horizontal = len(order) > MANY_LABELS or any(len(str(x)) > LONG_LABEL for x in order)
+    common = dict(title=row["name"])
+    if comparing:
+        common.update(color="Period", barmode="group", color_discrete_map={current_label: PALETTE[0], previous_label: PREVIOUS_COLOR})
+    if horizontal:
+        fig = px.bar(frame, x="Value", y="label", orientation="h", **common)
+        fig.update_yaxes(categoryorder="array", categoryarray=order[::-1])  # largest on top
+        fig.update_layout(xaxis_title=row["unit"], yaxis_title=None)
+    else:
+        fig = px.bar(frame, x="label", y="Value", **common)
+        fig.update_layout(xaxis_title=None, yaxis_title=row["unit"])
+    if not comparing:  # one colour per bar when there are few bars, one colour when there are many
+        fig.update_traces(marker_color=[PALETTE[i % len(PALETTE)] for i in range(len(frame))] if len(frame) <= COLOR_EACH_UP_TO else PALETTE[0])
+    fig.update_layout(margin=dict(t=50, b=10))
+    return fig
+
+
+def _donut_figure(row: dict):
+    """Donut of the current period's shares (one slice per category)."""
+    values = {k: v for k, v in (row["current"] or {}).items() if _is_number(v) and v > 0}
+    frame = pd.DataFrame({"label": list(values.keys()), "Value": list(values.values())}).sort_values("Value", ascending=False)
+    fig = px.pie(frame, names="label", values="Value", hole=0.5, title=row["name"], color_discrete_sequence=PALETTE)
+    fig.update_traces(textinfo="percent", sort=False)
+    fig.update_layout(margin=dict(t=50, b=10), legend_title_text=None)
+    return fig
+
+
+def _change_table(row: dict, previous_label: str | None, current_label: str) -> None:
+    """Small table under a donut: a donut cannot show two periods, so the change is listed."""
+    if not (row.get("categories") and previous_label):
+        return
+    frame = pd.DataFrame(row["categories"])[["label", "current", "previous", "change"]]
+    frame.columns = ["", current_label, previous_label, "Change"]
+    st.dataframe(frame.head(MAX_COMPARE_BARS), hide_index=True, width="stretch")
+
+
+def _breakdown_chart(source: str, row: dict, chart_type: str, previous_label: str | None, current_label: str) -> None:
+    kind, note = _chart_kind(chart_type, row["unit"], row["current"])
+    key = f"chart:{source}:{row['key']}"
+    if kind == "donut":
+        st.plotly_chart(_donut_figure(row), width="stretch", key=key)
+        _change_table(row, previous_label, current_label)
+    else:
+        st.plotly_chart(_bar_figure(row, previous_label, current_label), width="stretch", key=key)
+        if note:
+            st.caption(note)
+
+
+def _trend_section(source: str, current: dict, snaps: list[dict]) -> None:
+    """Line chart of one KPI across all saved periods (shown directly, not hidden)."""
+    numeric = [(k, v["name"]) for k, v in current["kpis"].items() if v["kind"] != "breakdown"]
+    if not numeric:
+        return
+    st.markdown("**Trend across saved periods**")
+    if len(snaps) < 2:
+        st.caption("Save at least two periods of this source to see a trend.")
+        return
+    key = st.selectbox("KPI", [k for k, _ in numeric], format_func=dict(numeric).get, key=f"trend:{source}")
+    points = comparison.trend_series(snaps, key)
+    if len(points) < 2:
+        st.caption("This KPI exists in fewer than two saved periods.")
+        return
+    fig = px.line(pd.DataFrame(points), x="label", y="value", markers=True, color_discrete_sequence=PALETTE)
+    fig.update_layout(xaxis_title=None, yaxis_title=current["kpis"][key]["unit"], margin=dict(t=10))
+    st.plotly_chart(fig, width="stretch", key=f"trendchart:{source}")
 
 
 def _find(snaps: list[dict], period: tuple[str, str] | None) -> dict | None:
@@ -140,6 +239,45 @@ def _find(snaps: list[dict], period: tuple[str, str] | None) -> dict | None:
 
 def _nice_time(iso: str) -> str:
     return datetime.fromisoformat(iso).strftime("%d %b %Y, %H:%M UTC")
+
+
+def _get_insights(source: str, current: dict, previous: dict | None):
+    """Insights for one source, reused from the cache when the snapshots and the AI setting are unchanged."""
+    router = st.session_state.get("router")
+    use_ai = bool(st.session_state.get("insights_use_ai")) and router is not None
+    cache = st.session_state.setdefault("insights_cache", {})
+    key = f"{insights.cache_key(current, previous)}|ai={use_ai}"
+    if key not in cache:
+        with st.spinner(f"Writing {source} insights..."):
+            cache[key] = insights.generate(current, previous, router=router if use_ai else None)
+    return cache[key]
+
+
+def _insights_panel(source: str, current: dict, previous: dict | None) -> None:
+    """Insights and recommendations for one source. Plain sentences always; AI wording only if ticked."""
+    router = st.session_state.get("router")
+    result = _get_insights(source, current, previous)
+
+    st.subheader("Insights and recommendations")
+    left, right = st.columns(2)
+    with left:
+        st.markdown("**Insights**")
+        for line in result.insights:
+            st.markdown(("⚠️ " if line.flagged else "• ") + line.text)
+        if not result.insights:
+            st.caption("Nothing stands out for this period.")
+    with right:
+        st.markdown("**Recommendations**")
+        for line in result.recommendations:
+            st.markdown("• " + line.text)
+        if not result.recommendations:
+            st.caption("No action needed from the current numbers.")
+    if st.session_state.get("insights_use_ai") and router is None:
+        st.caption("AI wording is off: open the main app page once so the model is set up. Showing the plain sentences.")
+    elif result.ai_used:
+        st.caption(f"Reworded by AI ({result.model}) and checked against the numbers. {result.fallbacks} sentence(s) kept in plain wording.")
+    for message in result.notes:
+        st.caption("Note: " + message)
 
 
 def render_source(source: str, period: tuple[str, str], compare_period: tuple[str, str] | None) -> None:
@@ -178,26 +316,19 @@ def render_source(source: str, period: tuple[str, str], compare_period: tuple[st
         for column, row in zip(columns, cards[start:start + CARDS_PER_ROW]):
             column.metric(row["name"], comparison.format_value(row["current"], row["unit"]), comparison.format_delta(row))
 
-    # Breakdown charts
+    _insights_panel(source, current, previous)
+
+    # Breakdown charts: bar, horizontal bar or donut, chosen from each KPI's chart_type and its data
     breakdowns = [r for r in rows if r["kind"] == "breakdown"]
     for start in range(0, len(breakdowns), 2):
         columns = st.columns(2)
         for column, row in zip(columns, breakdowns[start:start + 2]):
             with column:
-                _breakdown_chart(row, previous["period_start"] if previous else None, current["period_start"])
+                chart_type = current["kpis"].get(row["key"], {}).get("chart_type", "bar")
+                _breakdown_chart(source, row, chart_type, previous["period_start"] if previous else None, current["period_start"])
 
     # Trend across all saved periods of this source
-    numeric = [(k, v["name"]) for k, v in current["kpis"].items() if v["kind"] != "breakdown"]
-    if len(snaps) >= 2 and numeric:
-        with st.expander(f"{source}: trend across saved periods"):
-            key = st.selectbox("KPI", [k for k, _ in numeric], format_func=dict(numeric).get, key=f"trend:{source}")
-            points = comparison.trend_series(snaps, key)
-            if len(points) >= 2:
-                fig = px.line(pd.DataFrame(points), x="label", y="value", markers=True)
-                fig.update_layout(xaxis_title=None, yaxis_title=current["kpis"][key]["unit"], margin=dict(t=10))
-                st.plotly_chart(fig, width="stretch")
-            else:
-                st.caption("This KPI exists in fewer than two saved periods.")
+    _trend_section(source, current, snaps)
 
     if current.get("skipped_kpis"):
         with st.expander(f"{source}: {len(current['skipped_kpis'])} KPI(s) skipped"):
@@ -231,8 +362,9 @@ if others:
         format_func=lambda i: "No comparison" if i is None else f"{others[i][0]} to {others[i][1]}",
     )
     compare_period = None if choice is None else others[choice]
-# ppt_col.write("")  # lines the button up with the pickers
-# ppt_col.button("Generate PPT (coming soon)", disabled=True)
+# ppt_col.write("")  # lines the checkbox up with the pickers
+# ppt_col.checkbox("Reword insights with AI", key="insights_use_ai", help="Off: plain sentences from the numbers. On: the AI rewords them and every sentence is checked.")
+
 
 updated = [s["saved_at"] for s in all_snaps if (s["period_start"], s["period_end"]) == period]
 st.caption(f"Reporting period: {period[0]} to {period[1]}  |  Last updated: {_nice_time(max(updated))}")
@@ -241,4 +373,35 @@ for name in SOURCE_ORDER:
     st.divider()
     render_source(name, period, compare_period)
 
-# st.caption("Saved periods live in memory and are lost when the server restarts. Set STORE_BACKEND=sqlite to keep them.")
+# ---- Report -------------------------------------------------------------------
+st.divider()
+st.header("Report")
+st.caption("Builds a PowerPoint from the saved KPIs, charts, insights and recommendations shown above.")
+if st.button("Generate report (PPT)", type="primary"):
+    report_items = []
+    for name in SOURCE_ORDER:
+        source_snaps = snapshot_store.list_snapshots(name, latest_only=True)
+        current_snap = _find(source_snaps, period)
+        if current_snap is None:
+            continue
+        previous_snap = _find(source_snaps, compare_period)
+        report_items.append((name, current_snap, previous_snap, _get_insights(name, current_snap, previous_snap)))
+    if not report_items:
+        st.error("There is no saved data for this period.")
+    else:
+        try:
+            deck = report_deck.build(period, report_items)
+            data, deck_warnings = pptx_writer.build_deck(deck)
+            st.session_state["report_file"] = (f"kpi_report_{period[0]}_{period[1]}.pptx", data, deck_warnings)
+        except Exception as exc:  # noqa: BLE001 - show the problem instead of a crash
+            st.error(f"Could not build the report: {exc}")
+report_file = st.session_state.get("report_file")
+if report_file:
+    st.download_button(
+        f"Download {report_file[0]}", data=report_file[1], file_name=report_file[0],
+        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    )
+    for message in report_file[2]:
+        st.warning(message)
+
+# st.caption("Saved periods live in memory ...
