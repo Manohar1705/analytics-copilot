@@ -3,7 +3,7 @@
 Two tools in one Streamlit app:
 
 1. **Ask your data (main page).** Upload any CSV or Excel files and ask questions in plain English. An AI model writes the analysis code, Python runs it locally on your full data, and you get a written summary with tables and interactive charts.
-2. **KPI Dashboard (`Dashboard` page).** Upload ServiceNow, Sprinklr and Traackr exports, save fixed-formula KPIs for each month, compare periods, read automatic insights, and download a PowerPoint report. No AI is needed for the numbers.
+2. **KPI Dashboard (`Dashboard` page).** Upload ServiceNow, Traackr and Sprinklr exports, save fixed-formula KPIs for each month,compare periods, read AI-written insights and business recommendations for each KPI, and download a PowerPoint report. The numbers are always calculated by fixed formulas, never by AI. The dashboard works without an AI key, but the text is then plain rule-based sentences.
 
 An optional third page, **LLM Insights**, shows every AI call the app has made (model, tokens, cost, latency) using Langfuse.
 
@@ -26,7 +26,7 @@ An optional third page, **LLM Insights**, shows every AI call the app has made (
 - **Saved snapshots.** Only calculated results are saved, never raw rows. Saving the same source and period again creates a new version and keeps the old one.
 - **Period comparison.** Pick a period and compare it with another saved one. Percentage KPIs change in percentage points.
 - **Charts.** Cards for single numbers, and bar or donut charts for breakdowns. The chart type is chosen from the shape of the data. A trend line shows a KPI across all saved periods.
-- **Insights and recommendations.** Plain-language sentences generated from the saved numbers by rules in `insights.py`. Every number comes from the snapshot.
+- **AI insight and recommendation per dashboard ID.** Every KPI has a fixed ID (SN1, TC1, SP1…). The AI writes an insight and a business recommendation for each ID using the KPI values, summaries of the raw data and the Diageo business context. The numbers always come from the snapshot, and every sentence is checked against them. Rule-based sentences in `insights.py` are the fallback.
 - **PowerPoint report.** One click builds a deck from the saved KPIs, charts, insights and recommendations, using the template in `templates/`.
 
 ### LLM Insights
@@ -49,8 +49,8 @@ An optional third page, **LLM Insights**, shows every AI call the app has made (
 2. **Calculate.** `kpi_engine.py` applies the fixed formulas from `kpi_config.py` to the rows inside the confirmed period.
 3. **Save.** `snapshot_store.py` stores the calculated snapshot.
 4. **Compare.** `comparison.py` calculates the change between two saved periods.
-5. **Explain.** `insights.py` writes insights and recommendations from the saved numbers.
-6. **Report.** `report_deck.py` prepares the slides and `pptx_writer.py` draws the PowerPoint.
+5. **Explain.** When all three sources are saved for a period, `dashboard_ai.py` sends the KPI values (by dashboard ID), short summaries of the raw data and the Diageo prompt from `dashboard_prompts.py` to the AI in one call. The AI returns an insight and a business recommendation for each ID. Every sentence is checked: it may only use numbers that were sent, and it may not state a cause. IDs that fail get one repair attempt, then a plain sentence. The text is saved next to the snapshots.
+6. **Report.** `report_deck.py` prepares the slides, using the saved AI text (and the rule-based text from `insights.py` where there is none), and `pptx_writer.py` draws the PowerPoint.
 
 ## Requirements
 
@@ -143,9 +143,10 @@ LLM_MODELS=gemini:gemini-3.8-flash,gemini:gemini-3.6-flash,gemini:gemini-3.5-fla
 2. Select one or more Excel exports (`.xlsx`, `.xlsm`, `.xls`). The page shows the source it recognised, the sheets it used and how many rows it read.
 3. Confirm the **period start and end** for each file.
 4. Click **Calculate and save**. Any problems with a file or period are shown and nothing empty is saved.
-5. Choose a **Period** and, optionally, another period under **Compare with**. Only saved periods are offered.
-6. Read the KPI cards, the insights and recommendations, the breakdown charts, the top-10 table and the trend across saved periods for each source.
-7. Click **Generate report (PPT)**, then download the `.pptx` file.
+5. Once ServiceNow, Traackr and Sprinklr are all saved for the same period, the app makes one AI call and writes an insight and a business recommendation for every dashboard ID. If a source is missing, a note says so. Click **Regenerate AI insights for this period** to write them again.
+6. Choose a **Period**. Only saved periods are offered.
+7. Read the KPI cards and breakdown charts. Each shows its dashboard ID (SN1, TC1, SP1 and so on) with its insight and recommendation, followed by the top-10 table.
+8. Click **Generate report (PPT)**, then download the `.pptx` file. The slides use the same AI text.
 
 ### Supported sources
 
@@ -199,7 +200,7 @@ Your files are read and analysed on your computer. All calculations run locally.
 
 The provider never receives the full files. E-mail addresses and phone numbers are masked in what is sent. Other text, such as names, is not.
 
-**KPI Dashboard:** KPIs are calculated without AI. Saved snapshots contain calculated results only, never raw rows.
+**KPI Dashboard:** KPIs are always calculated by fixed formulas, never by AI. Saved snapshots contain calculated results only, never raw rows. To write the insights, the AI provider receives the KPI values with their dashboard IDs, your Diageo context prompt, and short summaries of the raw data for the chosen period (for example top 5 brands, request types, task counts per week). It does not receive the Excel files or their rows. These summaries can contain brand and account names, so check your provider's terms before using confidential data.
 
 **Langfuse (optional):** when keys are set, the app records metadata for each AI call: step name, model, provider, token counts, latency, cost and status, plus a session id. It does not send prompts, sample rows or answers.
 
@@ -226,7 +227,9 @@ The model's code runs in a separate process with a time limit and without your A
 | "I could not get working code" | Rephrase, or name the columns to use |
 | `ModuleNotFoundError` | Activate the virtual environment and run `pip install -r requirements.txt` again |
 | Dashboard says a file is not recognised | The sheet column names do not match the signatures in `sources.py`. The message lists what was expected |
-| Saved KPIs disappear after a restart | `STORE_BACKEND` is `memory`. Set it to `sqlite` |
+| Saved KPIs disappear after a restart | 
+| Dashboard shows plain sentences instead of AI text | The model could not be reached or the text failed a check. Check the key and `LLM_MODELS`, then click **Regenerate AI insights for this period** |
+| Dashboard says AI text will be written once a source is saved | The AI needs ServiceNow, Traackr and Sprinklr all saved for the same period |`STORE_BACKEND` is `memory`. Set it to `sqlite` |
 | LLM Insights says Langfuse is not set up | Add `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` to `.env` and restart |
 
 ## Known limitations
@@ -237,7 +240,9 @@ The model's code runs in a separate process with a time limit and without your A
 - Charts must be assigned to top-level variables in the generated code to be displayed.
 - Free-tier models are rate-limited, and code quality varies between models.
 - The KPI Dashboard only understands the three supported export layouts, and its KPI formulas are placeholders until confirmed.
-- Insights on the Dashboard use plain rule-based sentences. The option to have AI reword them is switched off in the current page.
+- The AI text on the Dashboard is written once after all three sources are saved for a period. Saving again replaces it. If the AI fails a check, that ID shows a plain sentence instead.
+- The AI sees KPI values and short summaries of the raw data (top 5 lists, weekly counts), not the full Excel files, so its detail is limited to those summaries. After a server restart, **Regenerate** works from the KPIs only until the files are saved again.
+- The top-10 table and the trend slide in the report have no dashboard ID, so they keep rule-based text.
 - Sheets are limited to the first 100,000 rows when read by the KPI Dashboard.
 - Single user, running locally.
 
@@ -246,7 +251,7 @@ The model's code runs in a separate process with a time limit and without your A
 | File | Purpose |
 |---|---|
 | `app.py` | Main page: upload, data preview, chat, tables, charts, downloads |
-| `pages/dashboard.py` | KPI Dashboard: upload, period confirmation, KPI cards, charts, comparison, PowerPoint report |
+| `pages/dashboard.py` | KPI Dashboard: upload, period confirmation, KPI cards, charts, AI insight and recommendation per dashboard ID, PowerPoint report |
 | `pages/llm_insights.py` | LLM Insights: table and totals of every AI call, read from Langfuse |
 | `engine.py` | Settings, model connection and fallback, prompts, and the code runner |
 | `data_loader.py` | Reads and cleans CSV and Excel files and builds the data profile |
@@ -255,7 +260,9 @@ The model's code runs in a separate process with a time limit and without your A
 | `kpi_engine.py` | Calculates a snapshot of KPIs and chart data from a recognised file |
 | `snapshot_store.py` | Saves and loads KPI snapshots (memory or SQLite), with versioning |
 | `comparison.py` | Change between two snapshots and trend series |
-| `insights.py` | Insights and recommendations from saved KPIs |
+| `insights.py` | Rule-based insights and recommendations from saved KPIs (also the fallback and the number checks for the AI text) |
+| `dashboard_ai.py` | Builds the payload (dashboard IDs, values, raw-data summaries), asks the AI for an insight and a recommendation per ID, checks the numbers and falls back to plain sentences |
+| `dashboard_prompts.py` | The Diageo business context and the instructions sent to the AI for the dashboard |
 | `report_deck.py` | Turns saved KPIs and insights into the slide plan for the report |
 | `pptx_writer.py` | Draws the PowerPoint deck on the template, with native editable charts and tables |
 | `templates/diageo_template.pptx` | Slide template used by the report |

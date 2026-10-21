@@ -13,6 +13,7 @@ import plotly.express as px
 import streamlit as st
 
 import comparison
+import dashboard_ai
 import insights
 import kpi_engine
 import pptx_writer
@@ -35,7 +36,41 @@ MAX_DONUT_SLICES = 8         # a donut is not used with more slices than this
 LONG_LABEL = 14              # bars turn horizontal when a label is longer than this ...
 MANY_LABELS = 6              # ... or when there are more categories than this
 
+def _get_router():
+    """Reuse the main page's model, or build one here so the dashboard works when opened first."""
+    router = st.session_state.get("router")
+    if router is None:
+        try:
+            router = dashboard_ai.make_router()
+        except Exception as exc:  # noqa: BLE001 - the dashboard must work without the AI
+            st.warning(f"AI text skipped: the model could not be set up ({exc}).")
+            return None
+        st.session_state["router"] = router
+    return router
 
+
+def _run_ai(start: str, end: str) -> bool:
+    """One AI call for a period, only when ServiceNow, Traackr and Sprinklr are all saved for it."""
+    period = (start, end)
+    snaps = {}
+    for name in SOURCE_ORDER:
+        found = _find(snapshot_store.list_snapshots(name, latest_only=True), period)
+        if found is None:
+            st.info(f"AI text for {start} to {end} will be written once {name} is saved for this period.")
+            return False
+        snaps[name] = found
+    router = _get_router()
+    if router is None:
+        return False
+    notes_store = st.session_state.get("ai_notes", {})
+    notes = {name: notes_store.get((start, end, name), []) for name in SOURCE_ORDER}
+    payload = dashboard_ai.build_payload(snaps, notes)
+    with st.spinner(f"Writing insights and recommendations for {start} to {end}..."):
+        result = dashboard_ai.generate(payload, router, period)
+    snapshot_store.save_ai_insights(start, end, result.to_dict())
+    for message in result.notes:
+        st.caption("AI note: " + message)
+    return True
 # =============================================================================
 # Upload and save
 # =============================================================================
@@ -104,10 +139,14 @@ def upload_section() -> None:
                     st.error(f"{name}: {message}")
                 continue
             st.success(f"{name} saved: {snapshot_store.save_snapshot(calc.snapshot)}")
+            inside = sources.apply_period(result.source, result.tables, start, end)
+            st.session_state.setdefault("ai_notes", {})[(str(start), str(end), result.source)] = dashboard_ai.summarise_tables(result.source, inside)
             if calc.warnings:
                 with st.expander(f"{name}: {len(calc.warnings)} note(s) from this calculation"):
                     for message in calc.warnings:
                         st.write("- " + message)
+        for p_start, p_end in sorted({(str(s), str(e)) for _, _, s, e in ready}):
+            _run_ai(p_start, p_end)
 
 # =============================================================================
 # Dashboard for one source
@@ -242,6 +281,15 @@ def _table_section(source: str, current: dict, previous: dict | None) -> None:
     # for line in spec["insights"]:
     #     st.caption(line)
 
+def _ai_text(ai, dash_id: str | None) -> None:
+    """Insight and recommendation for one dashboard ID (nothing is drawn when there is no AI text)."""
+    entry = ai.entries.get(dash_id) if ai and dash_id else None
+    if entry is None:
+        return
+    st.markdown(f"**{dash_id} - Insight**")
+    st.write(entry.insight)
+    st.markdown("**Business recommendation**")
+    st.write(entry.recommendation)
 
 def _find(snaps: list[dict], period: tuple[str, str] | None) -> dict | None:
     """The saved snapshot of this source for one (start, end) period, or None."""
@@ -303,6 +351,8 @@ def render_source(source: str, period: tuple[str, str], compare_period: tuple[st
     previous = _find(snaps, compare_period)
     if compare_period and previous is None:
         st.info(f"No saved {source} data for {compare_period[0]} to {compare_period[1]}, so no comparison is shown.")
+    saved_ai = snapshot_store.get_ai_insights(period[0], period[1])
+    ai = dashboard_ai.AIResult.from_dict(saved_ai) if saved_ai else None
 
     # Rows: with comparison if a second period is available.
     if previous:
@@ -329,7 +379,11 @@ def render_source(source: str, period: tuple[str, str], compare_period: tuple[st
         for column, row in zip(columns, cards[start:start + CARDS_PER_ROW]):
             column.metric(row["name"], comparison.format_value(row["current"], row["unit"]), comparison.format_delta(row))
 
-    # _insights_panel(source, current, previous)
+    if ai:
+        with st.expander(f"{source}: insights and recommendations for the KPI cards", expanded=True):
+            for row in cards:
+                _ai_text(ai, current["kpis"].get(row["key"], {}).get("dashboard_id"))
+                st.divider()
     # Breakdown charts: bar, horizontal bar or donut, chosen from each KPI's chart_type and its data
     breakdowns = [r for r in rows if r["kind"] == "breakdown"]
     for start in range(0, len(breakdowns), 2):
@@ -338,6 +392,7 @@ def render_source(source: str, period: tuple[str, str], compare_period: tuple[st
             with column:
                 chart_type = current["kpis"].get(row["key"], {}).get("chart_type", "bar")
                 _breakdown_chart(source, row, chart_type, previous["period_start"] if previous else None, current["period_start"])
+                _ai_text(ai, current["kpis"].get(row["key"], {}).get("dashboard_id"))
 
     # Top-10 table (same one as the report)
     _table_section(source, current, previous)
@@ -387,6 +442,9 @@ compare_period = None  # comparison is switched off
 
 updated = [s["saved_at"] for s in all_snaps if (s["period_start"], s["period_end"]) == period]
 st.caption(f"Reporting period: {period[0]} to {period[1]}  |  Last updated: {_nice_time(max(updated))}")
+if st.button("Regenerate AI insights for this period"):
+    if _run_ai(period[0], period[1]):
+        st.rerun()
 
 for name in SOURCE_ORDER:
     st.divider()
@@ -409,7 +467,9 @@ if st.button("Generate report (PPT)", type="primary"):
         st.error("There is no saved data for this period.")
     else:
         try:
-            deck = report_deck.build(period, report_items)
+            saved_ai = snapshot_store.get_ai_insights(period[0], period[1])
+            ai = dashboard_ai.AIResult.from_dict(saved_ai) if saved_ai else None
+            deck = report_deck.build(period, report_items, ai)
             data, deck_warnings = pptx_writer.build_deck(deck)
             st.session_state["report_file"] = (f"kpi_report_{period[0]}_{period[1]}.pptx", data, deck_warnings)
         except Exception as exc:  # noqa: BLE001 - show the problem instead of a crash

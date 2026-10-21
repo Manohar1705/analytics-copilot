@@ -55,7 +55,7 @@ def show_calls(days: int | None) -> None:
         st.error(f"Could not read from Langfuse: {exc}")
         return
     if not rows:
-        st.info("No AI calls recorded in this window. Ask a question in the app, then wait a few seconds.")
+        st.info("No AI calls recorded in this window. Ask a question in the app or save files on the Dashboard, then wait a few seconds.")
         return
 
     df = pd.DataFrame(rows)
@@ -75,7 +75,9 @@ def show_calls(days: int | None) -> None:
     table = pd.DataFrame(
         {
             "Name": shown["name"].map(
-                lambda n: "ask-analytics-copilot" if n in ("plan-code", "fix-code", "explain-result") else ("generate-report" if n in ("plan-report", "write-report") else n)
+                lambda n: "ask-analytics-copilot" if n in ("plan-code", "fix-code", "explain-result")
+                else ("generate-report" if n in ("plan-report", "write-report")
+                      else ("dashboard-insights" if n == "dashboard-insights" else n))
             ),
             "Date & Time": when.dt.strftime("%d/%m/%Y, %I:%M:%S %p"),
             "Model": shown["model"],

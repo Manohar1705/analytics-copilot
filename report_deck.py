@@ -141,8 +141,22 @@ def _lines(keys: set[str], result: "insights.InsightResult", facts: list["insigh
             advice.append(text)
     return found, advice
 
+def _ai_lines(ai: Any, current: dict, keys: set[str]) -> tuple[list[str], list[str]]:
+    """Saved AI text for the KPIs in `keys`. Empty lists when there is none, so the rule text is used instead."""
+    if not ai:
+        return [], []
+    ins, rec = [], []
+    for key, kpi in current["kpis"].items():
+        if key not in keys:
+            continue
+        entry = ai.entries.get(kpi.get("dashboard_id"))
+        if entry is None or entry.by != "ai":  # plain fallback sentences are not worth a slide box
+            continue
+        ins.append(entry.insight)
+        rec.append(entry.recommendation)
+    return ins[:MAX_PER_SLIDE], rec[:MAX_RECS_PER_SLIDE]
 
-def _source_slides(source: str, current: dict, previous: dict | None, result: "insights.InsightResult") -> list[dict]:
+def _source_slides(source: str, current: dict, previous: dict | None, result: "insights.InsightResult", ai: Any = None) -> list[dict]:
     facts, _ = insights.build_facts(current, previous)
     comp = comparison.compare_snapshots(current, previous) if previous else None
     rows = comp.rows if comp and comp.ok else _plain_rows(current)
@@ -156,6 +170,8 @@ def _source_slides(source: str, current: dict, previous: dict | None, result: "i
         chunk = singles[start:start + KPIS_PER_SLIDE]
         keys = {r["key"] for r in chunk} | ({"_steady"} if number == 1 else set())
         ins, rec = _lines(keys, result, facts, chunk)
+        a_ins, a_rec = _ai_lines(ai, current, keys)
+        ins, rec = (a_ins or ins), (a_rec or rec)
         if number == 1 and comparison.partial_note(current):
             ins = [comparison.partial_note(current)] + ins  # warn that the month is only partly covered
         suffix = f" ({number})" if len(singles) > KPIS_PER_SLIDE else ""
@@ -189,6 +205,8 @@ def _source_slides(source: str, current: dict, previous: dict | None, result: "i
             top = sorted(values.items(), key=lambda kv: -kv[1])[:MAX_BARS]
             categories, series = [k for k, _ in top], [{"name": now_label, "values": [v for _, v in top]}]
         ins, rec = _lines({row["key"]}, result, facts, [row])
+        a_ins, a_rec = _ai_lines(ai, current, {row["key"]})
+        ins, rec = (a_ins or ins), (a_rec or rec)
         slides.append({
             "type": kind, "title": f"{source}: {row['name']}", "chart_title": row["name"], "source": files,
             "categories": categories, "series": series, "number_format": fmt,
@@ -280,12 +298,12 @@ def _trend_slide(source: str, current: dict) -> dict | None:
         "number_format": "#,##0" if unit == "count" else "#,##0.00",
         "insights": ins, "recommendation": rec,
     }
-def build(period: tuple[str, str], items: list[tuple[str, dict, dict | None, "insights.InsightResult"]]) -> dict:
+def build(period: tuple[str, str], items: list[tuple[str, dict, dict | None, "insights.InsightResult"]], ai: Any = None) -> dict:
     """items = [(source, current_snapshot, previous_snapshot_or_None, InsightResult), ...]"""
     ordered = sorted(items, key=lambda i: SOURCE_ORDER.index(i[0]) if i[0] in SOURCE_ORDER else len(SOURCE_ORDER))
     slides: list[dict] = []
     for source, current, previous, result in ordered:
-        source_slides = _source_slides(source, current, previous, result)
+        source_slides = _source_slides(source, current, previous, result, ai)
         slides += source_slides
         table = _table_slide(source, current, previous)
         if table:
