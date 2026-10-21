@@ -22,7 +22,7 @@ import sources
 
 st.set_page_config(page_title="KPI Dashboard", page_icon="📈", layout="wide")
 
-SOURCE_ORDER = ["ServiceNow", "Sprinklr", "Traackr"]  # order of the sections on the page
+SOURCE_ORDER = ["ServiceNow", "Traackr", "Sprinklr"]  # order of the sections on the page
 CARDS_PER_ROW = 4
 MAX_COMPARE_BARS = 12
 
@@ -239,8 +239,8 @@ def _table_section(source: str, current: dict, previous: dict | None) -> None:
         return
     st.markdown("**" + spec["title"].split(": ", 1)[-1] + "**")
     st.dataframe(pd.DataFrame(spec["rows"], columns=spec["columns"]), hide_index=True, width="stretch")
-    for line in spec["insights"]:
-        st.caption(line)
+    # for line in spec["insights"]:
+    #     st.caption(line)
 
 
 def _find(snaps: list[dict], period: tuple[str, str] | None) -> dict | None:
@@ -329,8 +329,7 @@ def render_source(source: str, period: tuple[str, str], compare_period: tuple[st
         for column, row in zip(columns, cards[start:start + CARDS_PER_ROW]):
             column.metric(row["name"], comparison.format_value(row["current"], row["unit"]), comparison.format_delta(row))
 
-    _insights_panel(source, current, previous)
-
+    # _insights_panel(source, current, previous)
     # Breakdown charts: bar, horizontal bar or donut, chosen from each KPI's chart_type and its data
     breakdowns = [r for r in rows if r["kind"] == "breakdown"]
     for start in range(0, len(breakdowns), 2):
@@ -344,7 +343,7 @@ def render_source(source: str, period: tuple[str, str], compare_period: tuple[st
     _table_section(source, current, previous)
 
     # Trend across all saved periods of this source
-    _trend_section(source, current, snaps)
+    # _trend_section(source, current, snaps)
 
     if current.get("skipped_kpis"):
         with st.expander(f"{source}: {len(current['skipped_kpis'])} KPI(s) skipped"):
@@ -366,20 +365,24 @@ if not periods:
     st.info("No saved data yet. Upload files above and save them.")
     st.stop()
 
-pick_col, compare_col, ppt_col = st.columns([2, 2, 1])
-period = periods[pick_col.selectbox("Period", range(len(periods)), format_func=lambda i: f"{periods[i][0]} to {periods[i][1]}")]
-others = [p for p in periods if p != period]
-older = [p for p in others if p < period]  # saved periods before the chosen one, newest first
-compare_period = None
-if others:
-    default = 1 + others.index(older[0]) if older else 0  # pre-select the previous period
-    choice = compare_col.selectbox(
-        "Compare with", [None] + list(range(len(others))), index=default,
-        format_func=lambda i: "No comparison" if i is None else f"{others[i][0]} to {others[i][1]}",
-    )
-    compare_period = None if choice is None else others[choice]
+# pick_col, compare_col, ppt_col = st.columns([2, 2, 1])
+# period = periods[pick_col.selectbox("Period", range(len(periods)), format_func=lambda i: f"{periods[i][0]} to {periods[i][1]}")]
+# others = [p for p in periods if p != period]
+# older = [p for p in others if p < period]  # saved periods before the chosen one, newest first
+# compare_period = None
+# if others:
+#     default = 1 + others.index(older[0]) if older else 0  # pre-select the previous period
+#     choice = compare_col.selectbox(
+#         "Compare with", [None] + list(range(len(others))), index=default,
+#         format_func=lambda i: "No comparison" if i is None else f"{others[i][0]} to {others[i][1]}",
+#     )
+#     compare_period = None if choice is None else others[choice]
 # ppt_col.write("")  # lines the checkbox up with the pickers
 # ppt_col.checkbox("Reword insights with AI", key="insights_use_ai", help="Off: plain sentences from the numbers. On: the AI rewords them and every sentence is checked.")
+
+pick_col, _ = st.columns([2, 3])
+period = periods[pick_col.selectbox("Period", range(len(periods)), format_func=lambda i: f"{periods[i][0]} to {periods[i][1]}")]
+compare_period = None  # comparison is switched off
 
 
 updated = [s["saved_at"] for s in all_snaps if (s["period_start"], s["period_end"]) == period]

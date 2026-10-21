@@ -1,6 +1,6 @@
 """report_deck.py - builds the deck dictionary for pptx_writer.build_deck() from SAVED KPIs (no Streamlit).
 
-Order: ServiceNow, then Sprinklr, then Traackr. A source with no saved data is skipped, and the
+Order: ServiceNow, then Traackr, then Sprinklr. A source with no saved data is skipped, and the
 number of slides follows the saved KPIs:
   - headline numbers: one slide per 8 single-number KPIs
   - each breakdown KPI: one chart slide (bar, grouped bar when a previous period is selected, or donut)
@@ -17,7 +17,7 @@ from typing import Any
 import comparison
 import insights
 import snapshot_store
-SOURCE_ORDER = ["ServiceNow", "Sprinklr", "Traackr"]
+SOURCE_ORDER = ["ServiceNow", "Traackr", "Sprinklr"]
 KPIS_PER_SLIDE = 8        # pptx_writer.MAX_KPIS
 MAX_BARS = 12
 MAX_DONUT_SLICES = 8      # same chart rule as pages/dashboard.py
