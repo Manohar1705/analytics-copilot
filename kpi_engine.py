@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import date
 
 import sources
-from kpi_config import KPI_VERSION, split_by_columns
+from kpi_config import KPI_VERSION, dashboard_id, split_by_columns
 
 MAX_CATEGORIES = 12  # charts show the top N categories, the rest become "Other"
 
@@ -122,6 +122,7 @@ def _calculate(out: CalcResult, file_result: sources.FileResult, start: date | N
             skipped_info.append({"key": kpi.key, "name": kpi.name, "reason": f"calculation error: {exc}"})
             continue
         kpis[kpi.key] = {
+            "dashboard_id": dashboard_id(kpi.key),
             "name": kpi.name,
             "unit": kpi.unit,
             "kind": kpi.kind,

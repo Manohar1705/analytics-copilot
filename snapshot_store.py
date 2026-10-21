@@ -79,6 +79,7 @@ class MemoryStore:
     def __init__(self) -> None:
         self._lock = threading.Lock()  # Streamlit runs each session in its own thread
         self._rows: list[dict] = []    # in the order they were saved
+        self._ai: dict[tuple[str, str], dict] = {}  # (period_start, period_end) -> latest AI text
 
     def save(self, snapshot: dict) -> str:
         _validate(snapshot)
@@ -94,6 +95,14 @@ class MemoryStore:
             rows = [r for r in self._rows if source is None or r["source"] == source]
             return copy.deepcopy(rows)  # in save order; callers get copies
 
+    def save_ai(self, start: str, end: str, data: dict) -> None:
+        with self._lock:
+            self._ai[(start, end)] = copy.deepcopy(data)
+
+    def get_ai(self, start: str, end: str) -> dict | None:
+        with self._lock:
+            return copy.deepcopy(self._ai.get((start, end)))
+        
     def change_token(self) -> str:
         with self._lock:
             return f"{len(self._rows)}:{self._rows[-1]['id'] if self._rows else ''}"
@@ -111,6 +120,11 @@ class SqliteStore:
                 "CREATE TABLE IF NOT EXISTS snapshots ("
                 "seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE, source TEXT, "
                 "period_start TEXT, period_end TEXT, version INTEGER, saved_at TEXT, data TEXT)"
+            )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS ai_insights ("
+                "seq INTEGER PRIMARY KEY AUTOINCREMENT, period_start TEXT, period_end TEXT, "
+                "saved_at TEXT, data TEXT)"
             )
 
     def _connect(self) -> sqlite3.Connection:
@@ -138,7 +152,23 @@ class SqliteStore:
             query, args = query + " WHERE source=?", (source,)
         with self._lock, self._connect() as db:
             return [json.loads(text) for (text,) in db.execute(query + " ORDER BY seq", args)]
+        
+    def save_ai(self, start: str, end: str, data: dict) -> None:
+        saved_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._lock, self._connect() as db:
+            db.execute(
+                "INSERT INTO ai_insights (period_start, period_end, saved_at, data) VALUES (?, ?, ?, ?)",
+                (start, end, saved_at, json.dumps(data)),
+            )
 
+    def get_ai(self, start: str, end: str) -> dict | None:
+        with self._lock, self._connect() as db:
+            row = db.execute(
+                "SELECT data FROM ai_insights WHERE period_start=? AND period_end=? ORDER BY seq DESC LIMIT 1",
+                (start, end),
+            ).fetchone()
+        return json.loads(row[0]) if row else None
+    
     def change_token(self) -> str:
         with self._lock, self._connect() as db:
             count, last = db.execute("SELECT COUNT(*), COALESCE(MAX(seq), 0) FROM snapshots").fetchone()
@@ -193,3 +223,12 @@ def latest_snapshot(source: str) -> dict | None:
 def change_token() -> str:
     """Cheap value that changes whenever anything is saved. The dashboard polls this."""
     return get_store().change_token()
+
+def save_ai_insights(period_start, period_end, data: dict) -> None:
+    """Save the AI text (AIResult.to_dict()) for one period. Saving again replaces what get returns."""
+    get_store().save_ai(_iso(period_start), _iso(period_end), data)
+
+
+def get_ai_insights(period_start, period_end) -> dict | None:
+    """The latest saved AI text for a period, or None if there is none."""
+    return get_store().get_ai(_iso(period_start), _iso(period_end))

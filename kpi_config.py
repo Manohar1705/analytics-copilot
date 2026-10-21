@@ -259,7 +259,49 @@ KPIS: list[KPI] = [
     KPI("tr_campaign_spend", "Campaign spend", "Traackr", tr_campaign_spend,
         ("total_spend",), "card", "currency", table="campaigns"),
 ]
+# ---- Dashboard IDs (fixed; never renumber, only add new ones at the end) ----------
+# The LLM is given these IDs and returns its insight and recommendation under them.
+DASHBOARD_IDS: dict[str, str] = {
+    # ServiceNow
+    "sn_total_tasks": "SN1",
+    "sn_completion_rate": "SN2",
+    "sn_cancelled_tasks": "SN3",
+    "sn_tasks_by_sla": "SN4",
+    "sn_avg_duration": "SN5",
+    "sn_tasks_by_request_type": "SN6",
+    "sn_hours_by_request_type": "SN7",
+    "sn_tasks_by_region": "SN8",
+    "sn_tasks_by_country": "SN9",
+    "sn_tasks_by_priority": "SN10",
+    # Traackr
+    "tr_total_posts": "TC1",
+    "tr_total_engagements": "TC2",
+    "tr_total_impressions": "TC3",
+    "tr_total_video_views": "TC4",
+    "tr_engagement_rate": "TC5",
+    "tr_vit_score": "TC6",
+    "tr_visibility": "TC7",
+    "tr_impact": "TC8",
+    "tr_trust": "TC9",
+    "tr_engagements_by_brand": "TC10",
+    "tr_am_total_posts": "TC11",
+    "tr_am_total_engagements": "TC12",
+    "tr_am_engagements_by_brand": "TC13",
+    "tr_campaign_count": "TC14",
+    "tr_campaign_spend": "TC15",
+    # Sprinklr
+    "sp_total_engagements": "SP1",
+    "sp_engagements_by_account": "SP2",
+    "sp_total_ad_spend": "SP3",
+    "sp_paid_engagements": "SP4",
+    "sp_paid_impressions": "SP5",
+    "sp_cpm": "SP6",
+}
 
+
+def dashboard_id(kpi_key: str) -> str | None:
+    """The dashboard ID (SN1, TC1, SP1...) of a KPI, or None if it has none."""
+    return DASHBOARD_IDS.get(kpi_key)
 
 # ---- Lookups used by kpi_engine.py ------------------------------------------------
 def kpis_for_source(source: str) -> list[KPI]:
