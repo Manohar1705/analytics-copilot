@@ -303,6 +303,21 @@ def _find(snaps: list[dict], period: tuple[str, str] | None) -> dict | None:
     return next((s for s in snaps if (s["period_start"], s["period_end"]) == period), None)
 
 
+def _id_order(current: dict, rows: list[dict]) -> list[dict]:
+    """Rows in strict dashboard-ID order (SN1, SN2 ... SN10), cards and charts mixed.
+
+    The number is compared as an integer, so SN10 comes after SN9 and not after SN1.
+    A KPI without an ID goes to the end and keeps its original order.
+    """
+    def sort_key(item: tuple[int, dict]):
+        position, row = item
+        dash_id = current["kpis"].get(row["key"], {}).get("dashboard_id") or ""
+        digits = "".join(ch for ch in dash_id if ch.isdigit())
+        return (0, int(digits), position) if digits else (1, 0, position)
+
+    return [row for _, row in sorted(enumerate(rows), key=sort_key)]
+
+
 def _nice_time(iso: str) -> str:
     return datetime.fromisoformat(iso).strftime("%d %b %Y, %H:%M UTC")
 
@@ -377,23 +392,19 @@ def render_source(source: str, period: tuple[str, str], compare_period: tuple[st
     note = comparison.partial_note(current)
     if note and not previous:
         st.warning(note)
-    # KPI cards
-    cards = [r for r in rows if r["kind"] != "breakdown"]
-    for row in cards:  # one KPI per row: the number on the left, its own insight and recommendation on the right
-        number_col, text_col = st.columns([3, 2])
-        with number_col:
-            st.metric(row["name"], comparison.format_value(row["current"], row["unit"]), comparison.format_delta(row))
+    # Cards and charts together, in strict ID order (SN1, SN2, SN3 ...).
+    # Each one has its own insight and recommendation on the right.
+    for row in _id_order(current, rows):
+        dash_id = current["kpis"].get(row["key"], {}).get("dashboard_id")
+        left_col, text_col = st.columns([3, 2])
+        with left_col:
+            if row["kind"] == "breakdown":
+                chart_type = current["kpis"].get(row["key"], {}).get("chart_type", "bar")
+                _breakdown_chart(source, row, chart_type, previous["period_start"] if previous else None, current["period_start"])
+            else:
+                st.metric(row["name"], comparison.format_value(row["current"], row["unit"]), comparison.format_delta(row))
         with text_col:
-            _ai_text(ai, current["kpis"].get(row["key"], {}).get("dashboard_id"))
-    # Breakdown charts: bar, horizontal bar or donut, chosen from each KPI's chart_type and its data
-    breakdowns = [r for r in rows if r["kind"] == "breakdown"]
-    for row in breakdowns:  # one chart per row: the chart on the left, its insight and recommendation on the right
-        chart_col, text_col = st.columns([3, 2])
-        with chart_col:
-            chart_type = current["kpis"].get(row["key"], {}).get("chart_type", "bar")
-            _breakdown_chart(source, row, chart_type, previous["period_start"] if previous else None, current["period_start"])
-        with text_col:
-            _ai_text(ai, current["kpis"].get(row["key"], {}).get("dashboard_id"))
+            _ai_text(ai, dash_id)
 
     # Top-10 table (same one as the report)
     _table_section(source, current, previous)
