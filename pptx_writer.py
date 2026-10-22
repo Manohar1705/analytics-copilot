@@ -514,7 +514,7 @@ def _kpi_slide(prs, deck_title: str, spec: dict[str, Any], number: int) -> None:
     _insight_boxes_bottom(slide, spec)
 
 def _cards_slide(prs, deck_title: str, spec: dict[str, Any], number: int) -> None:
-    """Dashboard style: one column per KPI card, with its own insight and recommendation underneath."""
+    """One row per KPI: the number on the left, its own insight and recommendation on the right."""
     cards = [c for c in list(spec.get("cards", []))[:MAX_CARDS] if _clean(c.get("value")) and _clean(c.get("label"))]
     if not cards:
         raise ValueError("there are no KPI cards")
@@ -525,15 +525,14 @@ def _cards_slide(prs, deck_title: str, spec: dict[str, Any], number: int) -> Non
     if _clean(spec.get("note")):  # e.g. "data only goes up to 20 Aug"
         _text(slide, 0.5, 1.08, 12.33, 0.22, _clean(spec.get("note"))[:170], size=10, color=GREY)
         top = 1.5
-    gap = 0.25
-    slots = max(len(cards), 3)  # a lone card keeps the same width as one of three
-    card_w = (12.33 - gap * (slots - 1)) / slots
-    tile_h, box_gap, bottom = 1.3, 0.15, 6.95
-    rec_h = 1.75
-    ins_h = bottom - top - tile_h - box_gap * 2 - rec_h
+    gap, bottom = 0.2, 6.95
+    slots = max(len(cards), 3)  # a lone card keeps the same row height as one of three
+    row_h = (bottom - top - gap * (slots - 1)) / slots
+    tile_w = 3.3
+    box_w = (12.33 - tile_w - gap * 2) / 2
     for index, card in enumerate(cards):
-        x = 0.5 + index * (card_w + gap)
-        tile = _box(slide, x, top, card_w, tile_h, TINTS[index % len(TINTS)], PALETTE[index % len(PALETTE)], radius=0.08)
+        y = top + index * (row_h + gap)
+        tile = _box(slide, 0.5, y, tile_w, row_h, TINTS[index % len(TINTS)], PALETTE[index % len(PALETTE)], radius=0.08)
         frame = tile.text_frame
         frame.word_wrap = True
         frame.margin_left = frame.margin_right = Inches(0.12)
@@ -561,9 +560,9 @@ def _cards_slide(prs, deck_title: str, spec: dict[str, Any], number: int) -> Non
             _style_run(run, 9, False, LIGHT_GREY)
         insight, advice = _clean(card.get("insight")), _clean(card.get("recommendation"))
         if insight:
-            _list_box(slide, x, top + tile_h + box_gap, card_w, ins_h, "Insight", [insight], GREEN_TINT, GREEN)
+            _list_box(slide, 0.5 + tile_w + gap, y, box_w, row_h, "Insight", [insight], GREEN_TINT, GREEN)
         if advice:
-            _list_box(slide, x, top + tile_h + box_gap * 2 + ins_h, card_w, rec_h, "Business recommendation", [advice], BLUE_TINT, BLUE)
+            _list_box(slide, 0.5 + tile_w + gap * 2 + box_w, y, box_w, row_h, "Business recommendation", [advice], BLUE_TINT, BLUE)
 # ---------------------------------------------------------------------------
 # Closing recommendations
 # ---------------------------------------------------------------------------

@@ -50,20 +50,21 @@ def _get_router():
 
 
 def _run_ai(start: str, end: str) -> bool:
-    """One AI call for a period, only when ServiceNow, Traackr and Sprinklr are all saved for it."""
+    """One AI call for a period, using whichever of ServiceNow, Traackr and Sprinklr are saved for it."""
     period = (start, end)
     snaps = {}
     for name in SOURCE_ORDER:
         found = _find(snapshot_store.list_snapshots(name, latest_only=True), period)
-        if found is None:
-            st.info(f"AI text for {start} to {end} will be written once {name} is saved for this period.")
-            return False
-        snaps[name] = found
+        if found is not None:  # a missing source is simply skipped
+            snaps[name] = found
+    if not snaps:
+        st.info(f"There is no saved data for {start} to {end}, so there is nothing to write insights about yet.")
+        return False
     router = _get_router()
     if router is None:
         return False
     notes_store = st.session_state.get("ai_notes", {})
-    notes = {name: notes_store.get((start, end, name), []) for name in SOURCE_ORDER}
+    notes = {name: notes_store.get((start, end, name), []) for name in snaps}
     payload = dashboard_ai.build_payload(snaps, notes)
     with st.spinner(f"Writing insights and recommendations for {start} to {end}..."):
         result = dashboard_ai.generate(payload, router, period)
@@ -72,6 +73,11 @@ def _run_ai(start: str, end: str) -> bool:
     if not result.entries:  # nothing usable came back: keep whatever text was saved before
         st.warning("No AI text was written (the AI was unavailable or rate-limited). Try 'Regenerate AI insights' again in a moment.")
         return False
+    # Keep text saved earlier for IDs that were not written this time (e.g. a source uploaded in another session)
+    saved = snapshot_store.get_ai_insights(start, end)
+    if saved:
+        for dash_id, entry in dashboard_ai.AIResult.from_dict(saved).entries.items():
+            result.entries.setdefault(dash_id, entry)
     snapshot_store.save_ai_insights(start, end, result.to_dict())
     return True
 # =============================================================================
@@ -474,7 +480,7 @@ if st.button("Generate report (PPT)", type="primary"):
         if current_snap is None:
             continue
         previous_snap = _find(source_snaps, compare_period)
-        report_items.append((name, current_snap, previous_snap, _get_insights(name, current_snap, previous_snap)))
+        report_items.append((name, current_snap, previous_snap))
     if not report_items:
         st.error("There is no saved data for this period.")
     else:
