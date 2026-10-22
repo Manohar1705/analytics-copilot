@@ -19,6 +19,7 @@ import insights
 import snapshot_store
 SOURCE_ORDER = ["ServiceNow", "Traackr", "Sprinklr"]
 KPIS_PER_SLIDE = 8        # pptx_writer.MAX_KPIS
+CARDS_PER_SLIDE = 3       # card KPIs per slide, each with its own insight + recommendation
 MAX_BARS = 12
 MAX_DONUT_SLICES = 8      # same chart rule as pages/dashboard.py
 SKEW_LIMIT = 0.75
@@ -164,22 +165,27 @@ def _source_slides(source: str, current: dict, previous: dict | None, result: "i
     files = ", ".join(current.get("source_files", []))
     slides: list[dict] = []
 
-    # ---- headline numbers ---------------------------------------------------
+    # ---- card KPIs: each card carries its own AI insight + recommendation (same as the dashboard) ----
     singles = [r for r in rows if r["kind"] != "breakdown"]
-    for number, start in enumerate(range(0, len(singles), KPIS_PER_SLIDE), start=1):
-        chunk = singles[start:start + KPIS_PER_SLIDE]
-        keys = {r["key"] for r in chunk} | ({"_steady"} if number == 1 else set())
-        ins, rec = _lines(keys, result, facts, chunk)
-        a_ins, a_rec = _ai_lines(ai, current, keys)
-        ins, rec = (a_ins or ins), (a_rec or rec)
-        if number == 1 and comparison.partial_note(current):
-            ins = [comparison.partial_note(current)] + ins  # warn that the month is only partly covered
-        suffix = f" ({number})" if len(singles) > KPIS_PER_SLIDE else ""
+    for number, start in enumerate(range(0, len(singles), CARDS_PER_SLIDE), start=1):
+        chunk = singles[start:start + CARDS_PER_SLIDE]
+        cards = []
+        for r in chunk:
+            dash_id = current["kpis"].get(r["key"], {}).get("dashboard_id") or ""
+            entry = ai.entries.get(dash_id) if ai else None
+            cards.append({
+                "id": dash_id,
+                "label": r["name"],
+                "value": comparison.format_value(r["current"], r["unit"]),
+                "note": (comparison.format_delta(r) or "") if comparing else "",
+                "insight": entry.insight if entry else "",
+                "recommendation": entry.recommendation if entry and entry.by == "ai" else "",
+            })
+        suffix = f" ({number})" if len(singles) > CARDS_PER_SLIDE else ""
         slides.append({
-            "type": "kpis", "title": f"{source}: headline numbers{suffix}", "source": files,
-            "kpis": [{"label": r["name"], "value": comparison.format_value(r["current"], r["unit"]),
-                      "note": (comparison.format_delta(r) or "") if comparing else ""} for r in chunk],
-            "insights": ins, "recommendation": rec,
+            "type": "cards", "title": f"{source}: key numbers{suffix}", "source": files,
+            "cards": cards,
+            "note": (comparison.partial_note(current) or "") if number == 1 else "",
         })
 
     # ---- one chart per breakdown KPI ---------------------------------------
@@ -226,7 +232,7 @@ def _closing_items(slides: list[dict]) -> list[dict]:
                 heading = slide.get("chart_title") or slide["title"].split(": ", 1)[-1].capitalize()
                 items.append({"heading": heading, "text": recs[rank]})
     return items[:MAX_CLOSING]
-def _table_slide(source: str, current: dict, previous: dict | None) -> dict | None:
+def _table_slide(source: str, current: dict, previous: dict | None, ai: Any = None) -> dict | None:
     """Top rows of one breakdown KPI as a table (plus previous period and change when one is selected)."""
     key = TABLE_KPI.get(source)
     kpi = current["kpis"].get(key) if key else None
@@ -260,6 +266,8 @@ def _table_slide(source: str, current: dict, previous: dict | None) -> dict | No
             rec = [f"Check whether having the top {len(top)} hold {shown / total * 100:.0f}% of {name} is intended, and review {last_name} against {lead}."]
         else:
             rec = [f"Track whether {lead} keeps its lead in {name} next period, and look at {last_name} for room to grow."]
+            a_ins, a_rec = _ai_lines(ai, current, {key})
+            ins, rec = (a_ins or ins), (a_rec or rec)
     return {
         "type": "table", "title": f"{source}: {name} (table)", "source": ", ".join(current.get("source_files", [])),
         "columns": ["Name", "Current", "Previous", "Change", "Change %"] if comparing else ["Name", "Value", "Share"],
@@ -303,17 +311,10 @@ def build(period: tuple[str, str], items: list[tuple[str, dict, dict | None, "in
     ordered = sorted(items, key=lambda i: SOURCE_ORDER.index(i[0]) if i[0] in SOURCE_ORDER else len(SOURCE_ORDER))
     slides: list[dict] = []
     for source, current, previous, result in ordered:
-        source_slides = _source_slides(source, current, previous, result, ai)
-        slides += source_slides
-        table = _table_slide(source, current, previous)
+        slides += _source_slides(source, current, previous, result, ai)
+        table = _table_slide(source, current, previous, ai)
         if table:
             slides.append(table)
-        trend = _trend_slide(source, current)
-        if trend:
-            slides.append(trend)
-        closing = _closing_items(source_slides)
-        if closing:
-            slides.append({"type": "summary", "title": f"{source}: key recommendations", "items": closing})
     return {
         "title": "KPI Report",
         "subtitle": f"{period[0]} to {period[1]}",
