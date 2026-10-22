@@ -67,9 +67,12 @@ def _run_ai(start: str, end: str) -> bool:
     payload = dashboard_ai.build_payload(snaps, notes)
     with st.spinner(f"Writing insights and recommendations for {start} to {end}..."):
         result = dashboard_ai.generate(payload, router, period)
-    snapshot_store.save_ai_insights(start, end, result.to_dict())
     for message in result.notes:
         st.caption("AI note: " + message)
+    if not result.entries:  # nothing usable came back: keep whatever text was saved before
+        st.warning("No AI text was written (the AI was unavailable or rate-limited). Try 'Regenerate AI insights' again in a moment.")
+        return False
+    snapshot_store.save_ai_insights(start, end, result.to_dict())
     return True
 # =============================================================================
 # Upload and save
@@ -285,6 +288,8 @@ def _ai_text(ai, dash_id: str | None) -> None:
     """Insight and recommendation for one dashboard ID (nothing is drawn when there is no AI text)."""
     entry = ai.entries.get(dash_id) if ai and dash_id else None
     if entry is None:
+        if ai and dash_id:
+            st.caption(f"{dash_id}: AI insight not available. Press 'Regenerate AI insights' to try again.")
         return
     st.markdown(f"**{dash_id} - Insight**")
     st.write(entry.insight)
@@ -374,25 +379,21 @@ def render_source(source: str, period: tuple[str, str], compare_period: tuple[st
         st.warning(note)
     # KPI cards
     cards = [r for r in rows if r["kind"] != "breakdown"]
-    for start in range(0, len(cards), CARDS_PER_ROW):
-        columns = st.columns(CARDS_PER_ROW)
-        for column, row in zip(columns, cards[start:start + CARDS_PER_ROW]):
-            column.metric(row["name"], comparison.format_value(row["current"], row["unit"]), comparison.format_delta(row))
-
-    if ai:
-        with st.expander(f"{source}: insights and recommendations for the KPI cards", expanded=True):
-            for row in cards:
-                _ai_text(ai, current["kpis"].get(row["key"], {}).get("dashboard_id"))
-                st.divider()
+    for row in cards:  # one KPI per row: the number on the left, its own insight and recommendation on the right
+        number_col, text_col = st.columns([3, 2])
+        with number_col:
+            st.metric(row["name"], comparison.format_value(row["current"], row["unit"]), comparison.format_delta(row))
+        with text_col:
+            _ai_text(ai, current["kpis"].get(row["key"], {}).get("dashboard_id"))
     # Breakdown charts: bar, horizontal bar or donut, chosen from each KPI's chart_type and its data
     breakdowns = [r for r in rows if r["kind"] == "breakdown"]
-    for start in range(0, len(breakdowns), 2):
-        columns = st.columns(2)
-        for column, row in zip(columns, breakdowns[start:start + 2]):
-            with column:
-                chart_type = current["kpis"].get(row["key"], {}).get("chart_type", "bar")
-                _breakdown_chart(source, row, chart_type, previous["period_start"] if previous else None, current["period_start"])
-                _ai_text(ai, current["kpis"].get(row["key"], {}).get("dashboard_id"))
+    for row in breakdowns:  # one chart per row: the chart on the left, its insight and recommendation on the right
+        chart_col, text_col = st.columns([3, 2])
+        with chart_col:
+            chart_type = current["kpis"].get(row["key"], {}).get("chart_type", "bar")
+            _breakdown_chart(source, row, chart_type, previous["period_start"] if previous else None, current["period_start"])
+        with text_col:
+            _ai_text(ai, current["kpis"].get(row["key"], {}).get("dashboard_id"))
 
     # Top-10 table (same one as the report)
     _table_section(source, current, previous)

@@ -210,9 +210,7 @@ def _source_slides(source: str, current: dict, previous: dict | None, result: "i
         else:
             top = sorted(values.items(), key=lambda kv: -kv[1])[:MAX_BARS]
             categories, series = [k for k, _ in top], [{"name": now_label, "values": [v for _, v in top]}]
-        ins, rec = _lines({row["key"]}, result, facts, [row])
-        a_ins, a_rec = _ai_lines(ai, current, {row["key"]})
-        ins, rec = (a_ins or ins), (a_rec or rec)
+        ins, rec = _ai_lines(ai, current, {row["key"]})
         slides.append({
             "type": kind, "title": f"{source}: {row['name']}", "chart_title": row["name"], "source": files,
             "categories": categories, "series": series, "number_format": fmt,
@@ -257,17 +255,7 @@ def _table_slide(source: str, current: dict, previous: dict | None, ai: Any = No
                          f"{pct:+.1f}%" if pct is not None else "n/a"])
         else:
             rows.append([label, comparison.format_value(value, unit), f"{value / total * 100:.1f}%" if total else ""])
-    shown = sum(v for _, v in top)
-    ins = [f"Showing the top {len(top)} of {len(values)} values in {name}."]
-    if total:
-        ins.append(f"These {len(top)} hold {comparison.format_value(shown, unit)} of {comparison.format_value(total, unit)} ({shown / total * 100:.1f}%).")
-        lead, last_name = top[0][0], top[-1][0]
-        if total and shown / total >= 0.5:
-            rec = [f"Check whether having the top {len(top)} hold {shown / total * 100:.0f}% of {name} is intended, and review {last_name} against {lead}."]
-        else:
-            rec = [f"Track whether {lead} keeps its lead in {name} next period, and look at {last_name} for room to grow."]
-            a_ins, a_rec = _ai_lines(ai, current, {key})
-            ins, rec = (a_ins or ins), (a_rec or rec)
+    ins, rec = _ai_lines(ai, current, {key})
     return {
         "type": "table", "title": f"{source}: {name} (table)", "source": ", ".join(current.get("source_files", [])),
         "columns": ["Name", "Current", "Previous", "Change", "Change %"] if comparing else ["Name", "Value", "Share"],

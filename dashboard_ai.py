@@ -193,7 +193,7 @@ class AIResult:
 
     @classmethod
     def from_dict(cls, data: dict) -> "AIResult":
-        entries = {k: Entry(v["insight"], v["recommendation"], v.get("by", "ai")) for k, v in (data.get("entries") or {}).items()}
+        entries = {k: Entry(v["insight"], v["recommendation"], v.get("by", "ai")) for k, v in (data.get("entries") or {}).items() if v.get("by", "ai") == "ai"}  # plain-wording entries saved by older versions are dropped
         return cls(entries=entries, model=data.get("model"), fallbacks=data.get("fallbacks", 0), notes=data.get("notes", []))
 
 
@@ -236,9 +236,9 @@ def _problems(entry: Any, allowed: set[float]) -> list[str]:
     return problems
 
 
-def _fallback(item: dict) -> Entry:
-    shown = prompts._fmt_value(item.get("value"), item.get("unit", ""))
-    return Entry(insight=f"{item['name']} is {shown}.", recommendation="No recommendation was generated for this item.", by="fallback")
+# def _fallback(item: dict) -> Entry:
+#     shown = prompts._fmt_value(item.get("value"), item.get("unit", ""))
+#     return Entry(insight=f"{item['name']} is {shown}.", recommendation="No recommendation was generated for this item.", by="fallback")
 
 
 def _trace(router: Any) -> None:
@@ -311,14 +311,13 @@ def generate(payload: list[dict], router: Any, period: tuple[str, str] | None = 
     if parsed is None and not result.notes:
         result.notes.append("The AI reply could not be read as JSON.")
 
-    for dash_id, item in items.items():  # keep presentation order
+    for dash_id in items:  # keep presentation order; an ID without valid AI text gets no entry at all
         if dash_id in accepted:
             result.entries[dash_id] = accepted[dash_id]
         else:
-            result.entries[dash_id] = _fallback(item)
-            result.fallbacks += 1
+            result.fallbacks += 1  # counts the IDs left without AI text (no plain wording is written)
     if result.fallbacks:
-        result.notes.append(f"{result.fallbacks} item(s) use plain wording because the AI text failed a check.")
+        result.notes.append(f"{result.fallbacks} item(s) have no AI text (the AI was unavailable or its text failed a check). Press 'Regenerate AI insights' to try again.")
     return result
 
 
